@@ -1,5 +1,5 @@
-use assert_cmd::cargo::cargo_bin_cmd;
 use assert_cmd::Command;
+use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
 use std::fs;
 use std::path::Path;
@@ -176,6 +176,449 @@ fn test_help_command() {
         .assert()
         .success()
         .stdout(predicate::str::contains("AI token usage analytics"));
+}
+
+fn write_tokscale_settings(base: &Path, content: &str) {
+    for dir in [
+        base.join(".config/tokscale"),
+        base.join("xdg-config/tokscale"),
+        base.join("Library/Application Support/tokscale"),
+    ] {
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("settings.json"), content).unwrap();
+    }
+}
+
+fn autosubmit_scheduler_kind_fixture() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "launchd"
+    } else if cfg!(windows) {
+        "windowsTask"
+    } else {
+        "systemdUser"
+    }
+}
+
+fn autosubmit_scheduler_label() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "launchd"
+    } else if cfg!(windows) {
+        "windows-task"
+    } else {
+        "systemd-user"
+    }
+}
+
+fn unsupported_autosubmit_scheduler_kind_fixture() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "systemdUser"
+    } else {
+        "launchd"
+    }
+}
+
+fn unsupported_autosubmit_scheduler_label() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "systemd-user"
+    } else {
+        "launchd"
+    }
+}
+
+fn unsupported_autosubmit_scheduler_reason() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "systemd --user scheduler is not available on this platform"
+    } else {
+        "launchd scheduler is not available on this platform"
+    }
+}
+
+#[test]
+fn test_submit_help_shows_dry_run() {
+    let mut cmd = cargo_bin_cmd!("tokscale");
+    cmd.args(["submit", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--dry-run"));
+}
+
+#[test]
+fn test_autosubmit_help_command() {
+    let mut cmd = cargo_bin_cmd!("tokscale");
+    cmd.args(["autosubmit", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("scheduled automatic submit"))
+        .stdout(predicate::str::contains("enable"))
+        .stdout(predicate::str::contains("status"))
+        .stdout(predicate::str::contains(
+            "Run autosubmit if the saved interval is due",
+        ));
+}
+
+#[test]
+fn test_autosubmit_enable_help_hides_dry_run() {
+    let mut cmd = cargo_bin_cmd!("tokscale");
+    cmd.args(["autosubmit", "enable", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--interval"))
+        .stdout(predicate::str::contains("--month"))
+        .stdout(predicate::str::contains("--dry-run").not());
+}
+
+#[test]
+fn test_autosubmit_enable_rejects_dry_run() {
+    let temp = TempDir::new().unwrap();
+    let mut cmd = cargo_bin_cmd!("tokscale");
+    cmd.env("HOME", temp.path())
+        .env("XDG_CONFIG_HOME", temp.path())
+        .env("TOKSCALE_AUTOSUBMIT_SKIP_SCHEDULER", "1")
+        .args(["autosubmit", "enable", "--interval", "2h", "--dry-run"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "unexpected argument '--dry-run' found",
+        ));
+}
+
+#[test]
+fn test_autosubmit_status_rejects_subcommand_no_spinner() {
+    let mut cmd = cargo_bin_cmd!("tokscale");
+    cmd.args(["autosubmit", "status", "--no-spinner"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "unexpected argument '--no-spinner' found",
+        ));
+}
+
+#[test]
+fn test_autosubmit_status_reports_disabled_by_default() {
+    let temp = TempDir::new().unwrap();
+    let mut cmd = cargo_bin_cmd!("tokscale");
+    cmd.env("HOME", temp.path())
+        .env("XDG_CONFIG_HOME", temp.path())
+        .env("TOKSCALE_AUTOSUBMIT_SKIP_SCHEDULER", "1")
+        .args(["autosubmit", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Autosubmit status: disabled"));
+}
+
+#[test]
+fn test_autosubmit_status_reports_platform_scheduler_and_run_command() {
+    let temp = TempDir::new().unwrap();
+    let settings = format!(
+        r#"{{
+  "colorPalette": "blue",
+  "autoRefreshEnabled": false,
+  "autoRefreshMs": 60000,
+  "includeUnusedModels": false,
+  "nativeTimeoutMs": 300000,
+  "autosubmit": {{
+    "enabled": true,
+    "interval": {{
+      "raw": "2h",
+      "value": 2,
+      "unit": "hours"
+    }},
+    "submitArgs": {{
+      "opencode": true,
+      "claude": true,
+      "codex": false,
+      "gemini": false,
+      "cursor": false,
+      "amp": false,
+      "droid": false,
+      "openclaw": false,
+      "pi": false,
+      "kimi": false,
+      "qwen": false,
+      "roocode": false,
+      "kilocode": false,
+      "mux": false,
+      "synthetic": false,
+      "today": false,
+      "week": false,
+      "month": false,
+      "since": "2024-01-01",
+      "until": null,
+      "year": null,
+      "dryRun": false
+    }},
+    "scheduler": {{
+      "kind": "{}",
+      "identifier": "tokscale-autosubmit",
+      "heartbeatMinutes": 60,
+      "commandPreview": "'/tmp/tokscale' autosubmit run"
+    }},
+    "createdAt": "2026-03-21T00:00:00Z",
+    "lastRunAt": null
+  }}
+}}"#,
+        autosubmit_scheduler_kind_fixture()
+    );
+    write_tokscale_settings(temp.path(), &settings);
+
+    let mut cmd = cargo_bin_cmd!("tokscale");
+    cmd.env("HOME", temp.path())
+        .env("XDG_CONFIG_HOME", temp.path().join("xdg-config"))
+        .env("TOKSCALE_AUTOSUBMIT_SKIP_SCHEDULER", "1")
+        .args(["autosubmit", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Autosubmit status: enabled"))
+        .stdout(predicate::str::contains("Interval: 2h"))
+        .stdout(predicate::str::contains(format!(
+            "Scheduler: {}",
+            autosubmit_scheduler_label()
+        )))
+        .stdout(predicate::str::contains("Scheduler status: installed"))
+        .stdout(predicate::str::contains(
+            "Scheduler ID: tokscale-autosubmit",
+        ))
+        .stdout(predicate::str::contains(
+            "Command: '/tmp/tokscale' autosubmit run",
+        ))
+        .stdout(predicate::str::contains(
+            "Submit args: --opencode --claude --since 2024-01-01",
+        ));
+}
+
+#[test]
+fn test_autosubmit_status_reports_degraded_when_scheduler_probe_fails() {
+    let temp = TempDir::new().unwrap();
+    let settings = format!(
+        r#"{{
+  "colorPalette": "blue",
+  "autoRefreshEnabled": false,
+  "autoRefreshMs": 60000,
+  "includeUnusedModels": false,
+  "nativeTimeoutMs": 300000,
+  "autosubmit": {{
+    "enabled": true,
+    "interval": {{
+      "raw": "2h",
+      "value": 2,
+      "unit": "hours"
+    }},
+    "submitArgs": {{
+      "opencode": false,
+      "claude": false,
+      "codex": false,
+      "gemini": false,
+      "cursor": false,
+      "amp": false,
+      "droid": false,
+      "openclaw": false,
+      "pi": false,
+      "kimi": false,
+      "qwen": false,
+      "roocode": false,
+      "kilocode": false,
+      "mux": false,
+      "synthetic": false,
+      "today": false,
+      "week": false,
+      "month": false,
+      "since": null,
+      "until": null,
+      "year": null,
+      "dryRun": false
+    }},
+    "scheduler": {{
+      "kind": "{}",
+      "identifier": "tokscale-autosubmit",
+      "heartbeatMinutes": 60,
+      "commandPreview": "'/tmp/tokscale' autosubmit run"
+    }},
+    "createdAt": "2026-03-21T00:00:00Z",
+    "lastRunAt": null
+  }}
+}}"#,
+        unsupported_autosubmit_scheduler_kind_fixture()
+    );
+    write_tokscale_settings(temp.path(), &settings);
+
+    let mut cmd = cargo_bin_cmd!("tokscale");
+    cmd.env("HOME", temp.path())
+        .env("XDG_CONFIG_HOME", temp.path().join("xdg-config"))
+        .args(["autosubmit", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Autosubmit status: degraded"))
+        .stdout(predicate::str::contains(format!(
+            "Scheduler: {}",
+            unsupported_autosubmit_scheduler_label()
+        )))
+        .stdout(predicate::str::contains("Scheduler status: error"))
+        .stdout(predicate::str::contains(format!(
+            "Reason: {}",
+            unsupported_autosubmit_scheduler_reason()
+        )));
+}
+
+#[test]
+fn test_autosubmit_disable_clears_unsupported_scheduler_config() {
+    let temp = TempDir::new().unwrap();
+    let settings = format!(
+        r#"{{
+  "colorPalette": "blue",
+  "autoRefreshEnabled": false,
+  "autoRefreshMs": 60000,
+  "includeUnusedModels": false,
+  "nativeTimeoutMs": 300000,
+  "autosubmit": {{
+    "enabled": true,
+    "interval": {{
+      "raw": "2h",
+      "value": 2,
+      "unit": "hours"
+    }},
+    "submitArgs": {{
+      "opencode": false,
+      "claude": false,
+      "codex": false,
+      "gemini": false,
+      "cursor": false,
+      "amp": false,
+      "droid": false,
+      "openclaw": false,
+      "pi": false,
+      "kimi": false,
+      "qwen": false,
+      "roocode": false,
+      "kilocode": false,
+      "mux": false,
+      "synthetic": false,
+      "today": false,
+      "week": false,
+      "month": false,
+      "since": null,
+      "until": null,
+      "year": null,
+      "dryRun": false
+    }},
+    "scheduler": {{
+      "kind": "{}",
+      "identifier": "tokscale-autosubmit",
+      "heartbeatMinutes": 60,
+      "commandPreview": "'/tmp/tokscale' autosubmit run"
+    }},
+    "createdAt": "2026-03-21T00:00:00Z",
+    "lastRunAt": null
+  }}
+}}"#,
+        unsupported_autosubmit_scheduler_kind_fixture()
+    );
+    write_tokscale_settings(temp.path(), &settings);
+
+    let mut disable = cargo_bin_cmd!("tokscale");
+    disable
+        .env("HOME", temp.path())
+        .env("XDG_CONFIG_HOME", temp.path().join("xdg-config"))
+        .args(["autosubmit", "disable"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Autosubmit disabled"));
+
+    let mut status = cargo_bin_cmd!("tokscale");
+    status
+        .env("HOME", temp.path())
+        .env("XDG_CONFIG_HOME", temp.path().join("xdg-config"))
+        .args(["autosubmit", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Autosubmit status: disabled"));
+}
+
+#[test]
+fn test_autosubmit_status_fails_on_invalid_settings_json() {
+    let temp = TempDir::new().unwrap();
+    write_tokscale_settings(temp.path(), "{invalid-json");
+
+    let mut cmd = cargo_bin_cmd!("tokscale");
+    cmd.env("HOME", temp.path())
+        .env("XDG_CONFIG_HOME", temp.path().join("xdg-config"))
+        .env("TOKSCALE_AUTOSUBMIT_SKIP_SCHEDULER", "1")
+        .args(["autosubmit", "status"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "Failed to load settings for autosubmit status",
+        ));
+}
+
+#[test]
+fn test_autosubmit_run_logs_minimal_block_without_submit_details() {
+    let temp = TempDir::new().unwrap();
+    let settings = format!(
+        r#"{{
+  "colorPalette": "blue",
+  "autoRefreshEnabled": false,
+  "autoRefreshMs": 60000,
+  "includeUnusedModels": false,
+  "nativeTimeoutMs": 300000,
+  "autosubmit": {{
+    "enabled": true,
+    "interval": {{
+      "raw": "1h",
+      "value": 1,
+      "unit": "hours"
+    }},
+    "submitArgs": {{
+      "opencode": false,
+      "claude": false,
+      "codex": false,
+      "gemini": false,
+      "cursor": false,
+      "amp": false,
+      "droid": false,
+      "openclaw": false,
+      "pi": false,
+      "kimi": false,
+      "qwen": false,
+      "roocode": false,
+      "kilocode": false,
+      "mux": false,
+      "synthetic": false,
+      "today": false,
+      "week": false,
+      "month": false,
+      "since": null,
+      "until": null,
+      "year": null,
+      "dryRun": false
+    }},
+    "scheduler": {{
+      "kind": "{}",
+      "identifier": "tokscale-autosubmit",
+      "heartbeatMinutes": 60,
+      "commandPreview": "'/tmp/tokscale' autosubmit run"
+    }},
+    "createdAt": "2026-03-21T00:00:00Z",
+    "lastRunAt": null
+  }}
+}}"#,
+        autosubmit_scheduler_kind_fixture()
+    );
+    write_tokscale_settings(temp.path(), &settings);
+
+    let mut cmd = cargo_bin_cmd!("tokscale");
+    cmd.env("HOME", temp.path())
+        .env("XDG_CONFIG_HOME", temp.path().join("xdg-config"))
+        .args(["autosubmit", "run"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_match(r"20\d\d-\d\d-\d\dT").unwrap())
+        .stdout(predicate::str::contains("[autosubmit] start"))
+        .stdout(predicate::str::contains("status=failed"))
+        .stdout(predicate::str::contains("reason=\"Not logged in.\""))
+        .stdout(predicate::str::contains("Tokscale - Submit Usage Data").not())
+        .stdout(predicate::str::contains("Data to submit:").not())
+        .stdout(predicate::str::contains("Successfully submitted!").not())
+        .stderr(predicate::str::is_empty());
 }
 
 #[test]

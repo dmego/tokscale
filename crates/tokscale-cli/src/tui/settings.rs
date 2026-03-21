@@ -6,6 +6,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 use super::themes::ThemeName;
+use crate::commands::autosubmit::AutosubmitConfig;
 
 const DEFAULT_AUTO_REFRESH_MS: u64 = 60_000;
 const MIN_AUTO_REFRESH_MS: u64 = 30_000;
@@ -28,6 +29,8 @@ pub struct Settings {
     pub include_unused_models: bool,
     #[serde(default = "default_native_timeout_ms")]
     pub native_timeout_ms: u64,
+    #[serde(default)]
+    pub autosubmit: Option<AutosubmitConfig>,
 }
 
 fn default_color_palette() -> String {
@@ -50,6 +53,7 @@ impl Default for Settings {
             auto_refresh_ms: DEFAULT_AUTO_REFRESH_MS,
             include_unused_models: false,
             native_timeout_ms: DEFAULT_NATIVE_TIMEOUT_MS,
+            autosubmit: None,
         }
     }
 }
@@ -68,20 +72,19 @@ impl Settings {
     }
 
     pub fn load() -> Self {
-        Self::config_path()
-            .ok()
-            .and_then(|path| fs::read_to_string(path).ok())
-            .and_then(|content| serde_json::from_str(&content).ok())
-            .map(|mut s: Settings| {
-                s.auto_refresh_ms = s
-                    .auto_refresh_ms
-                    .clamp(MIN_AUTO_REFRESH_MS, MAX_AUTO_REFRESH_MS);
-                s.native_timeout_ms = s
-                    .native_timeout_ms
-                    .clamp(MIN_NATIVE_TIMEOUT_MS, MAX_NATIVE_TIMEOUT_MS);
-                s
-            })
-            .unwrap_or_default()
+        Self::load_strict().unwrap_or_default()
+    }
+
+    pub fn load_strict() -> Result<Self> {
+        let path = Self::config_path()?;
+        match fs::read_to_string(path) {
+            Ok(content) => {
+                let settings: Settings = serde_json::from_str(&content)?;
+                Ok(Self::clamp_values(settings))
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(err) => Err(err.into()),
+        }
     }
 
     pub fn save(&self) -> Result<()> {
@@ -145,5 +148,15 @@ impl Settings {
 
         let clamped = timeout_ms.clamp(MIN_NATIVE_TIMEOUT_MS, MAX_NATIVE_TIMEOUT_MS);
         Duration::from_millis(clamped)
+    }
+
+    fn clamp_values(mut settings: Self) -> Self {
+        settings.auto_refresh_ms = settings
+            .auto_refresh_ms
+            .clamp(MIN_AUTO_REFRESH_MS, MAX_AUTO_REFRESH_MS);
+        settings.native_timeout_ms = settings
+            .native_timeout_ms
+            .clamp(MIN_NATIVE_TIMEOUT_MS, MAX_NATIVE_TIMEOUT_MS);
+        settings
     }
 }

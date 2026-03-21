@@ -409,6 +409,15 @@ tokscale submit
 # Submit with filters
 tokscale submit --opencode --claude --since 2024-01-01
 
+# Enable autosubmit daily
+tokscale autosubmit enable --interval 1d
+
+# Show autosubmit status
+tokscale autosubmit status
+
+# Disable autosubmit
+tokscale autosubmit disable
+
 # Preview what would be submitted (dry run)
 tokscale submit --dry-run
 
@@ -417,6 +426,25 @@ tokscale logout
 ```
 
 <img alt="CLI Submit" src="./.github/assets/cli-submit.png" />
+
+### Autosubmit Commands
+
+Autosubmit automatically runs saved `submit` arguments on a schedule.
+
+```bash
+tokscale autosubmit enable --interval <Nh|Nd> [submit filters...]
+tokscale autosubmit status
+tokscale autosubmit disable
+```
+
+- `--interval` supports only `Nh` and `Nd`, such as `1h`, `2h`, `1d`, and `3d`
+- `N` must be a positive integer greater than zero; `15m`, `2w`, and `0h` are rejected
+- `[submit filters...]` supports the same filter flags as `tokscale submit`, but `--dry-run` is not currently supported
+- `autosubmit status` shows both saved config state and live scheduler state, including `degraded` when they diverge
+- Tokscale uses `launchd` on macOS, prefers `systemd --user` on Linux with `cron` as the fallback, and uses Task Scheduler on Windows
+
+`--no-spinner` remains a top-level CLI flag. Use `tokscale --no-spinner
+autosubmit status`, not `tokscale autosubmit status --no-spinner`.
 
 ### Cursor IDE Commands
 

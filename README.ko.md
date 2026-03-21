@@ -406,6 +406,15 @@ tokscale submit
 # 필터와 함께 제출
 tokscale submit --opencode --claude --since 2024-01-01
 
+# 매일 autosubmit 활성화
+tokscale autosubmit enable --interval 1d
+
+# autosubmit 상태 확인
+tokscale autosubmit status
+
+# autosubmit 비활성화
+tokscale autosubmit disable
+
 # 제출될 내용 미리보기 (드라이 런)
 tokscale submit --dry-run
 
@@ -414,6 +423,26 @@ tokscale logout
 ```
 
 <img alt="CLI Submit" src="./.github/assets/cli-submit.png" />
+
+### Autosubmit 명령
+
+Autosubmit은 저장된 `submit` 인자를 일정 주기로 자동 실행합니다.
+
+```bash
+tokscale autosubmit enable --interval <Nh|Nd> [submit filters...]
+tokscale autosubmit status
+tokscale autosubmit disable
+```
+
+- `--interval`은 `Nh`와 `Nd`만 지원하며 `1h`, `2h`, `1d`, `3d`처럼 사용합니다
+- `N`은 0보다 큰 양의 정수여야 하며 `15m`, `2w`, `0h`는 지원하지 않습니다
+- `[submit filters...]`에는 `tokscale submit`과 같은 필터를 사용할 수 있지만 현재는 `--dry-run`을 지원하지 않습니다
+- `autosubmit status`는 저장된 설정 상태와 실제 스케줄러 상태를 함께 보여주며, 둘이 어긋나면 `degraded` 상태도 표시합니다
+- macOS는 `launchd`, Linux는 `systemd --user`를 우선 사용하고 `cron`으로 폴백하며, Windows는 Task Scheduler를 사용합니다
+
+`--no-spinner`는 여전히 최상위 CLI 플래그입니다. 올바른 사용법은
+`tokscale --no-spinner autosubmit status`이며,
+`tokscale autosubmit status --no-spinner`는 지원되지 않습니다.
 
 ### Cursor IDE 명령어
 

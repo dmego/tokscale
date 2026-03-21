@@ -6,13 +6,16 @@ mod tui;
 use crate::tui::client_ui;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use commands::autosubmit::AutosubmitCommands;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use tui::Tab;
+
+pub const SUBMIT_MACHINE_ERROR_PREFIX: &str = "__TOKSCALE_SUBMIT_ERROR__:";
 
 #[derive(Parser)]
 #[command(name = "tokscale")]
@@ -350,54 +353,11 @@ enum Commands {
         year: Option<String>,
     },
     #[command(about = "Submit usage data to the Tokscale social platform")]
-    Submit {
-        #[arg(long, help = "Include only OpenCode data")]
-        opencode: bool,
-        #[arg(long, help = "Include only Claude Code data")]
-        claude: bool,
-        #[arg(long, help = "Include only Codex CLI data")]
-        codex: bool,
-        #[arg(long, help = "Include only Gemini CLI data")]
-        gemini: bool,
-        #[arg(long, help = "Include only Cursor IDE data")]
-        cursor: bool,
-        #[arg(long, help = "Include only Amp data")]
-        amp: bool,
-        #[arg(long, help = "Include only Droid data")]
-        droid: bool,
-        #[arg(long, help = "Include only OpenClaw data")]
-        openclaw: bool,
-        #[arg(long, help = "Include only Pi data")]
-        pi: bool,
-        #[arg(long, help = "Include only Kimi CLI data")]
-        kimi: bool,
-        #[arg(long, help = "Include only Qwen CLI data")]
-        qwen: bool,
-        #[arg(long, help = "Show only Roo Code usage")]
-        roocode: bool,
-        #[arg(long, help = "Show only Kilo usage")]
-        kilocode: bool,
-        #[arg(long, help = "Show only Mux usage")]
-        mux: bool,
-        #[arg(long, help = "Show only Synthetic usage")]
-        synthetic: bool,
-        #[arg(long, help = "Submit only today's usage")]
-        today: bool,
-        #[arg(long, help = "Submit last 7 days")]
-        week: bool,
-        #[arg(long, help = "Submit current month")]
-        month: bool,
-        #[arg(long, help = "Start date (YYYY-MM-DD)")]
-        since: Option<String>,
-        #[arg(long, help = "End date (YYYY-MM-DD)")]
-        until: Option<String>,
-        #[arg(long, help = "Filter by year (YYYY)")]
-        year: Option<String>,
-        #[arg(
-            long,
-            help = "Show what would be submitted without actually submitting"
-        )]
-        dry_run: bool,
+    Submit(SubmitCommandArgs),
+    #[command(about = "Manage scheduled automatic submit")]
+    Autosubmit {
+        #[command(subcommand)]
+        command: AutosubmitCommands,
     },
     #[command(about = "Capture subprocess output for token usage tracking")]
     Headless {
@@ -775,50 +735,12 @@ fn main() -> Result<()> {
                 None,
             )
         }
-        Some(Commands::Submit {
-            opencode,
-            claude,
-            codex,
-            gemini,
-            cursor,
-            amp,
-            droid,
-            openclaw,
-            pi,
-            kimi,
-            qwen,
-            roocode,
-            kilocode,
-            mux,
-            synthetic,
-            today,
-            week,
-            month,
-            since,
-            until,
-            year,
-            dry_run,
-        }) => {
-            let clients = build_client_filter(ClientFlags {
-                opencode,
-                claude,
-                codex,
-                gemini,
-                cursor,
-                amp,
-                droid,
-                openclaw,
-                pi,
-                kimi,
-                qwen,
-                roocode,
-                kilocode,
-                mux,
-                synthetic,
-            });
-            let (since, until) = build_date_filter(today, week, month, since, until);
-            let year = normalize_year_filter(today, week, month, year);
-            run_submit_command(clients, since, until, year, dry_run)
+        Some(Commands::Submit(args)) => run_submit_with_args(&args).map_err(|err| {
+            emit_submit_machine_error(&err.to_string());
+            err
+        }),
+        Some(Commands::Autosubmit { command }) => {
+            commands::autosubmit::handle_autosubmit_command(command)
         }
         Some(Commands::Headless {
             source,
@@ -967,6 +889,92 @@ struct ClientFlags {
     synthetic: bool,
 }
 
+#[derive(
+    Debug, Clone, clap::Args, serde::Serialize, serde::Deserialize, PartialEq, Eq, Default,
+)]
+#[serde(rename_all = "camelCase")]
+pub struct SubmitFilterArgs {
+    #[arg(long, help = "Include only OpenCode data")]
+    pub opencode: bool,
+    #[arg(long, help = "Include only Claude Code data")]
+    pub claude: bool,
+    #[arg(long, help = "Include only Codex CLI data")]
+    pub codex: bool,
+    #[arg(long, help = "Include only Gemini CLI data")]
+    pub gemini: bool,
+    #[arg(long, help = "Include only Cursor IDE data")]
+    pub cursor: bool,
+    #[arg(long, help = "Include only Amp data")]
+    pub amp: bool,
+    #[arg(long, help = "Include only Droid data")]
+    pub droid: bool,
+    #[arg(long, help = "Include only OpenClaw data")]
+    pub openclaw: bool,
+    #[arg(long, help = "Include only Pi data")]
+    pub pi: bool,
+    #[arg(long, help = "Include only Kimi CLI data")]
+    pub kimi: bool,
+    #[arg(long, help = "Include only Qwen CLI data")]
+    pub qwen: bool,
+    #[arg(long, help = "Show only Roo Code usage")]
+    pub roocode: bool,
+    #[arg(long, help = "Show only Kilo usage")]
+    pub kilocode: bool,
+    #[arg(long, help = "Show only Mux usage")]
+    pub mux: bool,
+    #[arg(long, help = "Show only Synthetic usage")]
+    pub synthetic: bool,
+    #[arg(long, help = "Submit only today's usage")]
+    pub today: bool,
+    #[arg(long, help = "Submit last 7 days")]
+    pub week: bool,
+    #[arg(long, help = "Submit current month")]
+    pub month: bool,
+    #[arg(long, help = "Start date (YYYY-MM-DD)")]
+    pub since: Option<String>,
+    #[arg(long, help = "End date (YYYY-MM-DD)")]
+    pub until: Option<String>,
+    #[arg(long, help = "Filter by year (YYYY)")]
+    pub year: Option<String>,
+}
+
+#[derive(
+    Debug, Clone, clap::Args, serde::Serialize, serde::Deserialize, PartialEq, Eq, Default,
+)]
+#[serde(rename_all = "camelCase")]
+pub struct SubmitCommandArgs {
+    #[command(flatten)]
+    #[serde(flatten)]
+    pub filters: SubmitFilterArgs,
+    #[arg(
+        long,
+        help = "Show what would be submitted without actually submitting"
+    )]
+    pub dry_run: bool,
+}
+
+impl SubmitFilterArgs {
+    fn client_flags(&self) -> ClientFlags {
+        ClientFlags {
+            opencode: self.opencode,
+            claude: self.claude,
+            codex: self.codex,
+            gemini: self.gemini,
+            cursor: self.cursor,
+            amp: self.amp,
+            droid: self.droid,
+            openclaw: self.openclaw,
+            pi: self.pi,
+            kimi: self.kimi,
+            qwen: self.qwen,
+            roocode: self.roocode,
+            kilocode: self.kilocode,
+            mux: self.mux,
+            synthetic: self.synthetic,
+        }
+    }
+}
+
 fn build_client_filter(flags: ClientFlags) -> Option<Vec<String>> {
     use tokscale_core::ClientId;
 
@@ -1059,11 +1067,25 @@ fn normalize_year_filter(
     month: bool,
     year: Option<String>,
 ) -> Option<String> {
-    if today || week || month {
-        None
-    } else {
-        year
-    }
+    if today || week || month { None } else { year }
+}
+
+pub fn run_submit_with_args(args: &SubmitCommandArgs) -> Result<()> {
+    let clients = build_client_filter(args.filters.client_flags());
+    let (since, until) = build_date_filter(
+        args.filters.today,
+        args.filters.week,
+        args.filters.month,
+        args.filters.since.clone(),
+        args.filters.until.clone(),
+    );
+    let year = normalize_year_filter(
+        args.filters.today,
+        args.filters.week,
+        args.filters.month,
+        args.filters.year.clone(),
+    );
+    run_submit_command(clients, since, until, year, args.dry_run)
 }
 
 fn get_date_range_label(
@@ -1248,7 +1270,7 @@ fn run_models_report(
 ) -> Result<()> {
     use std::time::Instant;
     use tokio::runtime::Runtime;
-    use tokscale_core::{get_model_report, GroupBy, ReportOptions};
+    use tokscale_core::{GroupBy, ReportOptions, get_model_report};
 
     let date_range = get_date_range_label(today, week, month_flag, &since, &until, &year);
 
@@ -1638,7 +1660,7 @@ fn run_monthly_report(
 ) -> Result<()> {
     use std::time::Instant;
     use tokio::runtime::Runtime;
-    use tokscale_core::{get_monthly_report, GroupBy, ReportOptions};
+    use tokscale_core::{GroupBy, ReportOptions, get_monthly_report};
 
     let date_range = get_date_range_label(today, week, month_flag, &since, &until, &year);
 
@@ -2170,7 +2192,7 @@ fn capitalize_client(client: &str) -> String {
 }
 
 fn run_clients_command(json: bool) -> Result<()> {
-    use tokscale_core::{parse_local_clients, ClientId, LocalParseOptions};
+    use tokscale_core::{ClientId, LocalParseOptions, parse_local_clients};
 
     let home_dir =
         dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
@@ -2769,7 +2791,7 @@ fn run_graph_command(
 ) -> Result<()> {
     use colored::Colorize;
     use std::time::Instant;
-    use tokscale_core::{generate_graph, GroupBy, ReportOptions};
+    use tokscale_core::{GroupBy, ReportOptions, generate_graph};
 
     let show_progress = output.is_some() && !no_spinner;
     let include_cursor = clients
@@ -2899,11 +2921,12 @@ fn run_submit_command(
     use colored::Colorize;
     use std::io::IsTerminal;
     use tokio::runtime::Runtime;
-    use tokscale_core::{generate_graph, ClientId, GroupBy, ReportOptions};
+    use tokscale_core::{ClientId, GroupBy, ReportOptions, generate_graph};
 
     let credentials = match auth::load_credentials() {
         Some(creds) => creds,
         None => {
+            emit_submit_machine_error("Not logged in.");
             eprintln!("\n  {}", "Not logged in.".yellow());
             eprintln!(
                 "{}",
@@ -3070,15 +3093,12 @@ fn run_submit_command(
                     });
 
             if !status.is_success() {
-                eprintln!(
-                    "\n  {}",
-                    format!(
-                        "Error: {}",
-                        body.error
-                            .unwrap_or_else(|| "Submission failed".to_string())
-                    )
-                    .red()
-                );
+                let error_message = body
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| "Submission failed".to_string());
+                emit_submit_machine_error(&error_message);
+                eprintln!("\n  {}", format!("Error: {}", error_message).red());
                 if let Some(details) = body.details {
                     for detail in details {
                         eprintln!("{}", format!("    - {}", detail).bright_black());
@@ -3137,6 +3157,7 @@ fn run_submit_command(
             }
         }
         Err(err) => {
+            emit_submit_machine_error("Failed to connect to server.");
             eprintln!("\n  {}", "Error: Failed to connect to server.".red());
             eprintln!("{}\n", format!("  {}", err).bright_black());
             std::process::exit(1);
@@ -3147,7 +3168,7 @@ fn run_submit_command(
     // We load with all clients and no date filters (default TUI view)
     // to maximize cache hit rate.
     {
-        use crate::tui::{save_cached_data, DataLoader};
+        use crate::tui::{DataLoader, save_cached_data};
         use std::collections::HashSet;
 
         let all_clients: Vec<ClientId> = ClientId::iter().collect();
@@ -3159,6 +3180,18 @@ fn run_submit_command(
     }
 
     Ok(())
+}
+
+fn submit_machine_error_contract_enabled() -> bool {
+    std::env::var("TOKSCALE_MACHINE_READABLE_SUBMIT_ERRORS")
+        .map(|value| matches!(value.as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false)
+}
+
+fn emit_submit_machine_error(reason: &str) {
+    if submit_machine_error_contract_enabled() {
+        eprintln!("{SUBMIT_MACHINE_ERROR_PREFIX}{reason}");
+    }
 }
 
 fn run_cursor_command(subcommand: CursorSubcommand) -> Result<()> {
@@ -3199,8 +3232,8 @@ fn run_headless_command(
     use chrono::Utc;
     use std::io::{Read, Write};
     use std::process::Command;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use uuid::Uuid;
 
     let source_lower = source.to_lowercase();

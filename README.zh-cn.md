@@ -407,6 +407,15 @@ tokscale submit
 # 带筛选提交
 tokscale submit --opencode --claude --since 2024-01-01
 
+# 按天开启 autosubmit
+tokscale autosubmit enable --interval 1d
+
+# 查看 autosubmit 状态
+tokscale autosubmit status
+
+# 关闭 autosubmit
+tokscale autosubmit disable
+
 # 预览将要提交的内容（试运行）
 tokscale submit --dry-run
 
@@ -415,6 +424,26 @@ tokscale logout
 ```
 
 <img alt="CLI Submit" src="./.github/assets/cli-submit.png" />
+
+### Autosubmit 命令
+
+Autosubmit 会按固定周期自动执行已保存的 `submit` 参数。
+
+```bash
+tokscale autosubmit enable --interval <Nh|Nd> [submit 筛选参数...]
+tokscale autosubmit status
+tokscale autosubmit disable
+```
+
+- `--interval` 目前只支持 `Nh` 和 `Nd`，例如 `1h`、`2h`、`1d`、`3d`
+- `N` 必须是大于 0 的正整数；`15m`、`2w`、`0h` 这类格式会被拒绝
+- `[submit 筛选参数...]` 支持和 `tokscale submit` 相同的筛选参数，但暂不支持 `--dry-run`
+- `autosubmit status` 会同时展示保存的配置状态和调度器实际状态；当两者不一致时会显示 `degraded`
+- macOS 使用 `launchd`，Linux 优先 `systemd --user`，回退到 `cron`，Windows 使用 Task Scheduler
+
+`--no-spinner` 仍然是顶层 CLI 参数，正确写法是
+`tokscale --no-spinner autosubmit status`，而不是
+`tokscale autosubmit status --no-spinner`。
 
 ### Cursor IDE 命令
 
