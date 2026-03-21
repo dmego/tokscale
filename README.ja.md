@@ -438,6 +438,7 @@ tokscale autosubmit disable
 - `--interval` は `Nh` と `Nd` のみをサポートし、`1h`、`2h`、`1d`、`3d` のように指定します
 - `N` は 0 より大きい正の整数である必要があり、`15m`、`2w`、`0h` は使えません
 - `[submit filters...]` には `tokscale submit` と同じフィルターを使えますが、現在は `--dry-run` をサポートしていません
+- `tokscale autosubmit run` を使うと、一度だけ手動で autosubmit チェックを実行できます
 - `autosubmit status` は保存済み設定と実際のスケジューラ状態の両方を表示し、ずれがある場合は `degraded` も表示します
 - macOS は `launchd`、Linux は `systemd --user` を優先し `cron` にフォールバック、Windows は Task Scheduler を使います
 

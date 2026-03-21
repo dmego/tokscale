@@ -440,6 +440,7 @@ tokscale autosubmit disable
 - `--interval` supports only `Nh` and `Nd`, such as `1h`, `2h`, `1d`, and `3d`
 - `N` must be a positive integer greater than zero; `15m`, `2w`, and `0h` are rejected
 - `[submit filters...]` supports the same filter flags as `tokscale submit`, but `--dry-run` is not currently supported
+- use `tokscale autosubmit run` to trigger a manual one-shot autosubmit check
 - `autosubmit status` shows both saved config state and live scheduler state, including `degraded` when they diverge
 - Tokscale uses `launchd` on macOS, prefers `systemd --user` on Linux with `cron` as the fallback, and uses Task Scheduler on Windows
 

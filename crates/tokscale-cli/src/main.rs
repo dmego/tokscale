@@ -892,6 +892,7 @@ struct ClientFlags {
 #[derive(
     Debug, Clone, clap::Args, serde::Serialize, serde::Deserialize, PartialEq, Eq, Default,
 )]
+#[serde(default)]
 #[serde(rename_all = "camelCase")]
 pub struct SubmitFilterArgs {
     #[arg(long, help = "Include only OpenCode data")]
@@ -941,6 +942,7 @@ pub struct SubmitFilterArgs {
 #[derive(
     Debug, Clone, clap::Args, serde::Serialize, serde::Deserialize, PartialEq, Eq, Default,
 )]
+#[serde(default)]
 #[serde(rename_all = "camelCase")]
 pub struct SubmitCommandArgs {
     #[command(flatten)]
@@ -3401,6 +3403,7 @@ fn run_headless_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn test_build_client_filter_all_false() {
@@ -3615,6 +3618,32 @@ mod tests {
     fn test_normalize_year_filter_no_year() {
         let year = normalize_year_filter(false, false, false, None);
         assert_eq!(year, None);
+    }
+
+    #[test]
+    fn test_submit_filter_args_deserialize_missing_fields_with_defaults() {
+        let parsed: SubmitFilterArgs = serde_json::from_value(json!({
+            "claude": true,
+            "since": "2024-01-01"
+        }))
+        .unwrap();
+
+        assert!(parsed.claude);
+        assert!(!parsed.opencode);
+        assert!(!parsed.week);
+        assert_eq!(parsed.since.as_deref(), Some("2024-01-01"));
+        assert_eq!(parsed.until, None);
+    }
+
+    #[test]
+    fn test_submit_command_args_deserialize_missing_dry_run_defaults_false() {
+        let parsed: SubmitCommandArgs = serde_json::from_value(json!({
+            "opencode": true
+        }))
+        .unwrap();
+
+        assert!(parsed.filters.opencode);
+        assert!(!parsed.dry_run);
     }
 
     #[test]

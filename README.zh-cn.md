@@ -438,6 +438,7 @@ tokscale autosubmit disable
 - `--interval` 目前只支持 `Nh` 和 `Nd`，例如 `1h`、`2h`、`1d`、`3d`
 - `N` 必须是大于 0 的正整数；`15m`、`2w`、`0h` 这类格式会被拒绝
 - `[submit 筛选参数...]` 支持和 `tokscale submit` 相同的筛选参数，但暂不支持 `--dry-run`
+- 可以使用 `tokscale autosubmit run` 手动触发一次 autosubmit 检查
 - `autosubmit status` 会同时展示保存的配置状态和调度器实际状态；当两者不一致时会显示 `degraded`
 - macOS 使用 `launchd`，Linux 优先 `systemd --user`，回退到 `cron`，Windows 使用 Task Scheduler
 

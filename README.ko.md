@@ -437,6 +437,7 @@ tokscale autosubmit disable
 - `--interval`은 `Nh`와 `Nd`만 지원하며 `1h`, `2h`, `1d`, `3d`처럼 사용합니다
 - `N`은 0보다 큰 양의 정수여야 하며 `15m`, `2w`, `0h`는 지원하지 않습니다
 - `[submit filters...]`에는 `tokscale submit`과 같은 필터를 사용할 수 있지만 현재는 `--dry-run`을 지원하지 않습니다
+- `tokscale autosubmit run`으로 수동 1회 autosubmit 점검을 실행할 수 있습니다
 - `autosubmit status`는 저장된 설정 상태와 실제 스케줄러 상태를 함께 보여주며, 둘이 어긋나면 `degraded` 상태도 표시합니다
 - macOS는 `launchd`, Linux는 `systemd --user`를 우선 사용하고 `cron`으로 폴백하며, Windows는 Task Scheduler를 사용합니다
 

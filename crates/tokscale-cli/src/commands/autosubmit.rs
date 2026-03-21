@@ -18,6 +18,8 @@ const AUTOSUBMIT_TASK_NAME: &str = "tokscale-autosubmit";
 const AUTOSUBMIT_LAUNCHD_LABEL: &str = "com.tokscale.autosubmit";
 const DEFAULT_HEARTBEAT_MINUTES: u32 = 60;
 const STALE_LOCK_MAX_AGE_SECS: i64 = 24 * 60 * 60;
+const MAX_INTERVAL_DAYS: u32 = 3650;
+const MAX_INTERVAL_HOURS: u32 = MAX_INTERVAL_DAYS * 24;
 
 #[derive(Debug, Clone, Subcommand)]
 pub enum AutosubmitCommands {
@@ -143,6 +145,21 @@ pub fn parse_interval_spec(raw: &str) -> Result<IntervalSpec> {
         "d" => IntervalUnit::Days,
         _ => bail!("Invalid interval '{raw}'. Only h and d suffixes are supported."),
     };
+
+    let max_value = match unit {
+        IntervalUnit::Hours => MAX_INTERVAL_HOURS,
+        IntervalUnit::Days => MAX_INTERVAL_DAYS,
+    };
+    if value > max_value {
+        bail!(
+            "Invalid interval '{raw}'. Maximum supported interval is {}{}.",
+            max_value,
+            match unit {
+                IntervalUnit::Hours => "h",
+                IntervalUnit::Days => "d",
+            }
+        );
+    }
 
     Ok(IntervalSpec {
         raw: trimmed,
@@ -701,36 +718,13 @@ fn submit_args_to_cli_args(args: &SubmitCommandArgs) -> Vec<String> {
     let filters = &args.filters;
     let mut cli_args = vec!["submit".to_string()];
 
-    for (flag, enabled) in [
-        ("--opencode", filters.opencode),
-        ("--claude", filters.claude),
-        ("--codex", filters.codex),
-        ("--gemini", filters.gemini),
-        ("--cursor", filters.cursor),
-        ("--amp", filters.amp),
-        ("--droid", filters.droid),
-        ("--openclaw", filters.openclaw),
-        ("--pi", filters.pi),
-        ("--kimi", filters.kimi),
-        ("--qwen", filters.qwen),
-        ("--roocode", filters.roocode),
-        ("--kilocode", filters.kilocode),
-        ("--mux", filters.mux),
-        ("--synthetic", filters.synthetic),
-        ("--today", filters.today),
-        ("--week", filters.week),
-        ("--month", filters.month),
-    ] {
+    for (flag, enabled) in submit_filter_bool_flag_entries(filters) {
         if enabled {
             cli_args.push(flag.to_string());
         }
     }
 
-    for (flag, value) in [
-        ("--since", filters.since.as_ref()),
-        ("--until", filters.until.as_ref()),
-        ("--year", filters.year.as_ref()),
-    ] {
+    for (flag, value) in submit_filter_value_arg_entries(filters) {
         if let Some(value) = value {
             cli_args.push(flag.to_string());
             cli_args.push(value.clone());
@@ -1080,13 +1074,36 @@ pub fn run_autosubmit_run() -> Result<()> {
 
 pub fn is_due(config: &AutosubmitConfig, now: DateTime<Utc>) -> bool {
     let anchor = config.last_run_at.unwrap_or(config.created_at);
-    now >= anchor + config.interval.duration()
+    anchor
+        .checked_add_signed(config.interval.duration())
+        .map(|due_at| now >= due_at)
+        .unwrap_or(false)
 }
 
 pub fn format_submit_args(args: &SubmitCommandArgs) -> String {
     let filters = &args.filters;
     let mut flags = Vec::new();
-    for (name, enabled) in [
+    for (name, enabled) in submit_filter_bool_flag_entries(filters) {
+        if enabled {
+            flags.push(name.to_string());
+        }
+    }
+
+    for (flag, value) in submit_filter_value_arg_entries(filters) {
+        if let Some(value) = value {
+            flags.push(format!("{flag} {value}"));
+        }
+    }
+
+    if flags.is_empty() {
+        "(all submit defaults)".to_string()
+    } else {
+        flags.join(" ")
+    }
+}
+
+fn submit_filter_bool_flag_entries(filters: &SubmitFilterArgs) -> [(&'static str, bool); 18] {
+    [
         ("--opencode", filters.opencode),
         ("--claude", filters.claude),
         ("--codex", filters.codex),
@@ -1105,26 +1122,17 @@ pub fn format_submit_args(args: &SubmitCommandArgs) -> String {
         ("--today", filters.today),
         ("--week", filters.week),
         ("--month", filters.month),
-    ] {
-        if enabled {
-            flags.push(name.to_string());
-        }
-    }
-    if let Some(value) = &filters.since {
-        flags.push(format!("--since {}", value));
-    }
-    if let Some(value) = &filters.until {
-        flags.push(format!("--until {}", value));
-    }
-    if let Some(value) = &filters.year {
-        flags.push(format!("--year {}", value));
-    }
+    ]
+}
 
-    if flags.is_empty() {
-        "(all submit defaults)".to_string()
-    } else {
-        flags.join(" ")
-    }
+fn submit_filter_value_arg_entries(
+    filters: &SubmitFilterArgs,
+) -> [(&'static str, Option<&String>); 3] {
+    [
+        ("--since", filters.since.as_ref()),
+        ("--until", filters.until.as_ref()),
+        ("--year", filters.year.as_ref()),
+    ]
 }
 
 fn install_scheduler(config: &AutosubmitConfig, executable: &std::path::Path) -> Result<()> {
@@ -1865,6 +1873,12 @@ mod tests {
     }
 
     #[test]
+    fn parse_interval_rejects_excessive_values() {
+        assert!(parse_interval_spec("87601h").is_err());
+        assert!(parse_interval_spec("3651d").is_err());
+    }
+
+    #[test]
     fn select_scheduler_kind_matches_platform_policy() {
         assert_eq!(
             select_scheduler_kind_for_platform("macos", false),
@@ -2045,6 +2059,32 @@ mod tests {
         };
         assert!(!is_due(&config, config.created_at + Duration::minutes(119)));
         assert!(is_due(&config, config.created_at + Duration::minutes(120)));
+    }
+
+    #[test]
+    fn due_logic_does_not_panic_on_unrepresentable_due_time() {
+        let config = AutosubmitConfig {
+            enabled: true,
+            interval: IntervalSpec {
+                raw: format!("{}d", u32::MAX),
+                value: u32::MAX,
+                unit: IntervalUnit::Days,
+            },
+            submit_args: sample_submit_args(),
+            scheduler: SchedulerMetadata {
+                kind: scheduler_kind(),
+                identifier: "tokscale-autosubmit".to_string(),
+                heartbeat_minutes: DEFAULT_HEARTBEAT_MINUTES,
+                command_preview: "tokscale autosubmit run".to_string(),
+            },
+            created_at: Utc::now(),
+            last_run_at: None,
+        };
+
+        let result = std::panic::catch_unwind(|| is_due(&config, Utc::now()));
+
+        assert!(result.is_ok());
+        assert!(!result.unwrap());
     }
 
     #[test]

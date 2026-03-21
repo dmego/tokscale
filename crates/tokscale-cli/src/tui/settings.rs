@@ -72,19 +72,41 @@ impl Settings {
     }
 
     pub fn load() -> Self {
-        Self::load_strict().unwrap_or_default()
+        Self::load_strict()
+            .or_else(|_| Self::load_without_autosubmit())
+            .unwrap_or_default()
     }
 
     pub fn load_strict() -> Result<Self> {
         let path = Self::config_path()?;
         match fs::read_to_string(path) {
-            Ok(content) => {
-                let settings: Settings = serde_json::from_str(&content)?;
-                Ok(Self::clamp_values(settings))
-            }
+            Ok(content) => Self::parse_strict(&content),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(err) => Err(err.into()),
         }
+    }
+
+    fn load_without_autosubmit() -> Result<Self> {
+        let path = Self::config_path()?;
+        match fs::read_to_string(path) {
+            Ok(content) => Self::parse_without_autosubmit(&content),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(err) => Err(err.into()),
+        }
+    }
+
+    fn parse_strict(content: &str) -> Result<Self> {
+        let settings: Settings = serde_json::from_str(content)?;
+        Ok(Self::clamp_values(settings))
+    }
+
+    fn parse_without_autosubmit(content: &str) -> Result<Self> {
+        let mut value: serde_json::Value = serde_json::from_str(content)?;
+        if let Some(object) = value.as_object_mut() {
+            object.remove("autosubmit");
+        }
+        let settings: Settings = serde_json::from_value(value)?;
+        Ok(Self::clamp_values(settings))
     }
 
     pub fn save(&self) -> Result<()> {
@@ -158,5 +180,87 @@ impl Settings {
             .native_timeout_ms
             .clamp(MIN_NATIVE_TIMEOUT_MS, MAX_NATIVE_TIMEOUT_MS);
         settings
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+    use std::ffi::OsString;
+    use tempfile::TempDir;
+
+    struct TestEnvGuard {
+        _temp: TempDir,
+        previous_home: Option<OsString>,
+        previous_xdg_config_home: Option<OsString>,
+    }
+
+    impl Drop for TestEnvGuard {
+        fn drop(&mut self) {
+            match &self.previous_home {
+                Some(value) => std::env::set_var("HOME", value),
+                None => std::env::remove_var("HOME"),
+            }
+            match &self.previous_xdg_config_home {
+                Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+        }
+    }
+
+    fn with_temp_config_dir() -> TestEnvGuard {
+        let temp = TempDir::new().unwrap();
+        let previous_home = std::env::var_os("HOME");
+        let previous_xdg_config_home = std::env::var_os("XDG_CONFIG_HOME");
+        let config_home = temp.path().join("xdg-config");
+        std::fs::create_dir_all(&config_home).unwrap();
+        std::fs::create_dir_all(temp.path().join("Library/Application Support")).unwrap();
+        std::env::set_var("HOME", temp.path());
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
+        TestEnvGuard {
+            _temp: temp,
+            previous_home,
+            previous_xdg_config_home,
+        }
+    }
+
+    fn write_settings_fixture(base: &std::path::Path, content: &str) {
+        for dir in [
+            base.join(".config/tokscale"),
+            base.join("xdg-config/tokscale"),
+            base.join("Library/Application Support/tokscale"),
+        ] {
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("settings.json"), content).unwrap();
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn load_preserves_non_autosubmit_settings_when_autosubmit_is_invalid() {
+        let env = with_temp_config_dir();
+        write_settings_fixture(
+            env._temp.path(),
+            r#"{
+  "colorPalette": "purple",
+  "autoRefreshEnabled": true,
+  "autoRefreshMs": 45000,
+  "includeUnusedModels": true,
+  "nativeTimeoutMs": 120000,
+  "autosubmit": {
+    "enabled": true
+  }
+}"#,
+        );
+
+        let loaded = Settings::load();
+
+        assert_eq!(loaded.color_palette, "purple");
+        assert!(loaded.auto_refresh_enabled);
+        assert_eq!(loaded.auto_refresh_ms, 45_000);
+        assert!(loaded.include_unused_models);
+        assert_eq!(loaded.native_timeout_ms, 120_000);
+        assert!(loaded.autosubmit.is_none());
     }
 }
