@@ -264,17 +264,31 @@ fn orphan_scheduler_candidates(executable: &std::path::Path) -> Vec<AutosubmitCo
         .collect()
 }
 
-fn detect_orphan_schedulers_with_probe<F>(
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct OrphanSchedulerProbeSummary {
+    installed: Vec<AutosubmitConfig>,
+    errors: Vec<String>,
+}
+
+impl OrphanSchedulerProbeSummary {
+    fn is_empty(&self) -> bool {
+        self.installed.is_empty() && self.errors.is_empty()
+    }
+}
+
+fn inspect_orphan_schedulers_with_probe<F>(
     executable: &std::path::Path,
     mut probe: F,
-) -> Vec<AutosubmitConfig>
+) -> OrphanSchedulerProbeSummary
 where
     F: FnMut(&AutosubmitConfig) -> SchedulerProbeResult,
 {
-    let mut orphaned = Vec::new();
+    let mut orphaned = OrphanSchedulerProbeSummary::default();
     for candidate in orphan_scheduler_candidates(executable) {
-        if matches!(probe(&candidate), SchedulerProbeResult::Installed) {
-            orphaned.push(candidate);
+        match probe(&candidate) {
+            SchedulerProbeResult::Installed => orphaned.installed.push(candidate),
+            SchedulerProbeResult::Missing => {}
+            SchedulerProbeResult::Error(reason) => orphaned.errors.push(reason),
         }
     }
     orphaned
@@ -304,6 +318,47 @@ fn orphan_scheduler_reason(configs: &[AutosubmitConfig]) -> String {
             "Autosubmit settings are missing but schedulers are still installed: {}",
             format_scheduler_targets(configs)
         )
+    }
+}
+
+fn orphan_scheduler_probe_error_reason(errors: &[String]) -> String {
+    if errors.len() == 1 {
+        format!("Failed to verify orphan scheduler state: {}", errors[0])
+    } else {
+        format!(
+            "Failed to verify some orphan scheduler states: {}",
+            errors.join("; ")
+        )
+    }
+}
+
+fn additional_orphan_schedulers(
+    orphaned: &OrphanSchedulerProbeSummary,
+    current: Option<&AutosubmitConfig>,
+) -> Vec<AutosubmitConfig> {
+    orphaned
+        .installed
+        .iter()
+        .filter(|candidate| {
+            current
+                .map(|current| !same_scheduler_target(candidate, current))
+                .unwrap_or(true)
+        })
+        .cloned()
+        .collect()
+}
+
+fn invalid_autosubmit_reason(settings: &Settings) -> Option<String> {
+    settings.invalid_autosubmit_error().map(|err| {
+        format!("Saved autosubmit config is invalid: {err}")
+    })
+}
+
+fn format_combined_reasons(reasons: Vec<String>) -> Option<String> {
+    if reasons.is_empty() {
+        None
+    } else {
+        Some(reasons.join("; "))
     }
 }
 
@@ -775,7 +830,14 @@ where
     let result = (|| -> Result<AutosubmitRunOutcome> {
         let _lock = acquire_run_lock()?;
         let mut settings =
-            Settings::load_strict().context("Failed to load settings for autosubmit run")?;
+            Settings::load_lenient().context("Failed to load settings for autosubmit run")?;
+        if settings.has_invalid_autosubmit() && settings.autosubmit.is_none() {
+            bail!(
+                "{}",
+                invalid_autosubmit_reason(&settings)
+                    .unwrap_or_else(|| "Saved autosubmit config is invalid".to_string())
+            );
+        }
         let Some(mut config) = settings.autosubmit.clone() else {
             bail!("Autosubmit is not enabled");
         };
@@ -888,7 +950,7 @@ pub fn run_autosubmit_enable(interval_raw: &str, submit: SubmitFilterArgs) -> Re
     };
 
     let mut settings =
-        Settings::load_strict().context("Failed to load settings for autosubmit enable")?;
+        Settings::load_lenient().context("Failed to load settings for autosubmit enable")?;
     let previous = settings.autosubmit.clone();
 
     if scheduler_requires_saved_settings_before_install(&config.scheduler.kind) {
@@ -970,36 +1032,62 @@ pub fn run_autosubmit_disable() -> Result<()> {
     let executable =
         std::env::current_exe().context("Failed to resolve tokscale executable path")?;
     let mut settings =
-        Settings::load_strict().context("Failed to load settings for autosubmit disable")?;
+        Settings::load_lenient().context("Failed to load settings for autosubmit disable")?;
     let orphaned = if should_skip_scheduler_side_effects() {
-        Vec::new()
+        OrphanSchedulerProbeSummary::default()
     } else {
-        detect_orphan_schedulers_with_probe(&executable, probe_scheduler)
+        inspect_orphan_schedulers_with_probe(&executable, probe_scheduler)
     };
+    let had_invalid_autosubmit = settings.has_invalid_autosubmit();
+    let previous_settings = settings.clone();
 
     let Some(config) = settings.autosubmit.clone() else {
-        if orphaned.is_empty() {
+        if !had_invalid_autosubmit && orphaned.is_empty() {
             println!("\n  Autosubmit is not enabled.\n");
             return Ok(());
         }
 
-        for orphan in &orphaned {
+        for orphan in &orphaned.installed {
             uninstall_scheduler(orphan)?;
         }
 
+        settings.clear_invalid_autosubmit();
+        settings.autosubmit = None;
+        settings
+            .save()
+            .context("Failed to save settings for autosubmit disable")?;
+
+        if !orphaned.errors.is_empty() {
+            bail!("{}", orphan_scheduler_probe_error_reason(&orphaned.errors));
+        }
+
         println!("\n  Autosubmit disabled.");
-        println!("  Removed orphan scheduler(s): {}\n", format_scheduler_targets(&orphaned));
+        if !orphaned.installed.is_empty() {
+            println!(
+                "  Removed orphan scheduler(s): {}",
+                format_scheduler_targets(&orphaned.installed)
+            );
+        }
+        if had_invalid_autosubmit {
+            println!("  Cleared invalid autosubmit config.");
+        }
+        println!();
         return Ok(());
     };
+
+    let extra_orphans = additional_orphan_schedulers(&orphaned, Some(&config));
 
     if scheduler_kind_supported_on_current_platform(&config.scheduler.kind) {
         uninstall_scheduler(&config)?;
     }
+    for orphan in &extra_orphans {
+        uninstall_scheduler(orphan)?;
+    }
 
     settings.autosubmit = None;
+    settings.clear_invalid_autosubmit();
     if let Err(err) = settings.save() {
-        settings.autosubmit = Some(config.clone());
-        let _ = settings.save();
+        let _ = previous_settings.save();
         if scheduler_kind_supported_on_current_platform(&config.scheduler.kind) {
             let rollback_err = install_scheduler(&config, &executable).err();
             if let Some(rollback_err) = rollback_err {
@@ -1011,7 +1099,18 @@ pub fn run_autosubmit_disable() -> Result<()> {
         return Err(err).context("Failed to save settings for autosubmit disable");
     }
 
-    println!("\n  Autosubmit disabled.\n");
+    if !orphaned.errors.is_empty() {
+        bail!("{}", orphan_scheduler_probe_error_reason(&orphaned.errors));
+    }
+
+    println!("\n  Autosubmit disabled.");
+    if !extra_orphans.is_empty() {
+        println!(
+            "  Removed orphan scheduler(s): {}",
+            format_scheduler_targets(&extra_orphans)
+        );
+    }
+    println!();
     Ok(())
 }
 
@@ -1019,15 +1118,28 @@ pub fn run_autosubmit_status() -> Result<()> {
     let executable =
         std::env::current_exe().context("Failed to resolve tokscale executable path")?;
     let settings =
-        Settings::load_strict().context("Failed to load settings for autosubmit status")?;
+        Settings::load_lenient().context("Failed to load settings for autosubmit status")?;
+    let orphaned = if should_skip_scheduler_side_effects() {
+        OrphanSchedulerProbeSummary::default()
+    } else {
+        inspect_orphan_schedulers_with_probe(&executable, probe_scheduler)
+    };
     match settings.autosubmit {
         Some(config) if config.enabled => {
             let probe = probe_scheduler(&config);
-            let overall_status = if matches!(probe, SchedulerProbeResult::Installed) {
-                "enabled"
-            } else {
-                "degraded"
-            };
+            let extra_orphans = additional_orphan_schedulers(&orphaned, Some(&config));
+            let reasons = format_combined_reasons(
+                probe
+                    .reason(&config)
+                    .into_iter()
+                    .chain((!extra_orphans.is_empty()).then(|| orphan_scheduler_reason(&extra_orphans)))
+                    .chain(
+                        (!orphaned.errors.is_empty())
+                            .then(|| orphan_scheduler_probe_error_reason(&orphaned.errors)),
+                    )
+                    .collect(),
+            );
+            let overall_status = if reasons.is_none() { "enabled" } else { "degraded" };
 
             println!("\n  Autosubmit status: {overall_status}");
             println!("  Interval: {}", config.interval.raw);
@@ -1035,7 +1147,7 @@ pub fn run_autosubmit_status() -> Result<()> {
             println!("  Scheduler status: {}", probe.status_label());
             println!("  Scheduler ID: {}", config.scheduler.identifier);
             println!("  Command: {}", config.scheduler.command_preview);
-            if let Some(reason) = probe.reason(&config) {
+            if let Some(reason) = reasons {
                 println!("  Reason: {}", reason);
             }
             println!(
@@ -1044,24 +1156,37 @@ pub fn run_autosubmit_status() -> Result<()> {
             );
         }
         _ => {
-            let orphaned = if should_skip_scheduler_side_effects() {
-                Vec::new()
-            } else {
-                detect_orphan_schedulers_with_probe(&executable, probe_scheduler)
-            };
+            let reasons = format_combined_reasons(
+                invalid_autosubmit_reason(&settings)
+                    .into_iter()
+                    .chain(
+                        (!orphaned.installed.is_empty())
+                            .then(|| orphan_scheduler_reason(&orphaned.installed)),
+                    )
+                    .chain(
+                        (!orphaned.errors.is_empty())
+                            .then(|| orphan_scheduler_probe_error_reason(&orphaned.errors)),
+                    )
+                    .collect(),
+            );
 
-            if orphaned.is_empty() {
+            if reasons.is_none() {
                 println!("\n  Autosubmit status: disabled\n");
             } else {
                 println!("\n  Autosubmit status: degraded");
-                if orphaned.len() == 1 {
-                    println!("  Scheduler: {}", orphaned[0].scheduler.kind);
+                if orphaned.installed.len() == 1 {
+                    println!("  Scheduler: {}", orphaned.installed[0].scheduler.kind);
                     println!("  Scheduler status: installed");
-                    println!("  Scheduler ID: {}", orphaned[0].scheduler.identifier);
+                    println!("  Scheduler ID: {}", orphaned.installed[0].scheduler.identifier);
+                } else if !orphaned.errors.is_empty() {
+                    println!("  Scheduler status: error");
                 } else {
                     println!("  Scheduler status: installed");
                 }
-                println!("  Reason: {}\n", orphan_scheduler_reason(&orphaned));
+                if let Some(reason) = reasons {
+                    println!("  Reason: {}", reason);
+                }
+                println!();
             }
         }
     }
@@ -2358,7 +2483,7 @@ mod tests {
             .next()
             .unwrap();
 
-        let orphaned = detect_orphan_schedulers_with_probe(executable, |candidate| {
+        let orphaned = inspect_orphan_schedulers_with_probe(executable, |candidate| {
             if candidate.scheduler.kind == expected_kind {
                 SchedulerProbeResult::Installed
             } else {
@@ -2367,8 +2492,62 @@ mod tests {
         });
 
         assert_eq!(settings.autosubmit, None);
-        assert_eq!(orphaned.len(), 1);
-        assert_eq!(orphaned[0].scheduler.kind, expected_kind);
+        assert_eq!(orphaned.installed.len(), 1);
+        assert_eq!(orphaned.installed[0].scheduler.kind, expected_kind);
+        assert!(orphaned.errors.is_empty());
+    }
+
+    #[test]
+    fn additional_orphan_schedulers_exclude_current_saved_scheduler() {
+        let current = AutosubmitConfig {
+            enabled: true,
+            interval: parse_interval_spec("2h").unwrap(),
+            submit_args: sample_submit_args(),
+            scheduler: SchedulerMetadata {
+                kind: SchedulerKind::Launchd,
+                identifier: "tokscale-autosubmit".to_string(),
+                heartbeat_minutes: DEFAULT_HEARTBEAT_MINUTES,
+                command_preview: "tokscale autosubmit run".to_string(),
+            },
+            created_at: Utc::now(),
+            last_run_at: None,
+        };
+        let extra = AutosubmitConfig {
+            enabled: true,
+            interval: parse_interval_spec("2h").unwrap(),
+            submit_args: sample_submit_args(),
+            scheduler: SchedulerMetadata {
+                kind: SchedulerKind::Cron,
+                identifier: "tokscale-autosubmit-cron".to_string(),
+                heartbeat_minutes: DEFAULT_HEARTBEAT_MINUTES,
+                command_preview: "tokscale autosubmit run".to_string(),
+            },
+            created_at: Utc::now(),
+            last_run_at: None,
+        };
+        let orphaned = OrphanSchedulerProbeSummary {
+            installed: vec![current.clone(), extra.clone()],
+            errors: Vec::new(),
+        };
+
+        let additional = additional_orphan_schedulers(&orphaned, Some(&current));
+
+        assert_eq!(additional, vec![extra]);
+    }
+
+    #[test]
+    fn inspect_orphan_schedulers_records_probe_errors() {
+        let executable = std::path::Path::new("/tmp/tokscale");
+
+        let orphaned = inspect_orphan_schedulers_with_probe(executable, |_candidate| {
+            SchedulerProbeResult::Error("probe failed".to_string())
+        });
+
+        assert!(orphaned.installed.is_empty());
+        assert_eq!(
+            orphaned.errors.len(),
+            orphan_scheduler_kinds_for_platform(std::env::consts::OS).len()
+        );
     }
 
     #[test]

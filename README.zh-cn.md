@@ -432,6 +432,7 @@ Autosubmit 会按固定周期自动执行已保存的 `submit` 参数。
 ```bash
 tokscale autosubmit enable --interval <Nh|Nd> [submit 筛选参数...]
 tokscale autosubmit status
+tokscale autosubmit run
 tokscale autosubmit disable
 ```
 

@@ -460,6 +460,34 @@ fn test_autosubmit_status_reports_degraded_when_scheduler_probe_fails() {
 }
 
 #[test]
+fn test_autosubmit_status_reports_degraded_when_saved_autosubmit_config_is_invalid() {
+    let temp = TempDir::new().unwrap();
+    let settings = r#"{
+  "colorPalette": "blue",
+  "autoRefreshEnabled": false,
+  "autoRefreshMs": 60000,
+  "includeUnusedModels": false,
+  "nativeTimeoutMs": 300000,
+  "autosubmit": {
+    "enabled": true
+  }
+}"#;
+    write_tokscale_settings(temp.path(), settings);
+
+    let mut cmd = cargo_bin_cmd!("tokscale");
+    cmd.env("HOME", temp.path())
+        .env("XDG_CONFIG_HOME", temp.path().join("xdg-config"))
+        .env("TOKSCALE_AUTOSUBMIT_SKIP_SCHEDULER", "1")
+        .args(["autosubmit", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Autosubmit status: degraded"))
+        .stdout(predicate::str::contains(
+            "Saved autosubmit config is invalid",
+        ));
+}
+
+#[test]
 fn test_autosubmit_disable_clears_unsupported_scheduler_config() {
     let temp = TempDir::new().unwrap();
     let settings = format!(
@@ -531,6 +559,79 @@ fn test_autosubmit_disable_clears_unsupported_scheduler_config() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Autosubmit status: disabled"));
+}
+
+#[test]
+fn test_autosubmit_disable_clears_invalid_autosubmit_config() {
+    let temp = TempDir::new().unwrap();
+    let settings = r#"{
+  "colorPalette": "blue",
+  "autoRefreshEnabled": false,
+  "autoRefreshMs": 60000,
+  "includeUnusedModels": false,
+  "nativeTimeoutMs": 300000,
+  "autosubmit": {
+    "enabled": true
+  }
+}"#;
+    write_tokscale_settings(temp.path(), settings);
+
+    let mut disable = cargo_bin_cmd!("tokscale");
+    disable
+        .env("HOME", temp.path())
+        .env("XDG_CONFIG_HOME", temp.path().join("xdg-config"))
+        .env("TOKSCALE_AUTOSUBMIT_SKIP_SCHEDULER", "1")
+        .args(["autosubmit", "disable"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Autosubmit disabled"));
+
+    let mut status = cargo_bin_cmd!("tokscale");
+    status
+        .env("HOME", temp.path())
+        .env("XDG_CONFIG_HOME", temp.path().join("xdg-config"))
+        .env("TOKSCALE_AUTOSUBMIT_SKIP_SCHEDULER", "1")
+        .args(["autosubmit", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Autosubmit status: disabled"));
+}
+
+#[test]
+fn test_autosubmit_status_reports_degraded_when_orphan_probe_fails_without_saved_config() {
+    let temp = TempDir::new().unwrap();
+    write_tokscale_settings(
+        temp.path(),
+        r#"{
+  "colorPalette": "blue",
+  "autoRefreshEnabled": false,
+  "autoRefreshMs": 60000,
+  "includeUnusedModels": false,
+  "nativeTimeoutMs": 300000
+}"#,
+    );
+
+    if cfg!(target_os = "macos") {
+        let launch_agents = temp.path().join("Library/LaunchAgents");
+        fs::create_dir_all(&launch_agents).unwrap();
+        fs::write(
+            launch_agents.join("com.tokscale.autosubmit.plist"),
+            "<plist version=\"1.0\"></plist>",
+        )
+        .unwrap();
+    }
+
+    let mut cmd = cargo_bin_cmd!("tokscale");
+    cmd.env("HOME", temp.path())
+        .env("XDG_CONFIG_HOME", temp.path().join("xdg-config"))
+        .env("PATH", "/definitely-missing")
+        .args(["autosubmit", "status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Autosubmit status: degraded"))
+        .stdout(predicate::str::contains("Failed to inspect").or(predicate::str::contains(
+            "scheduler is not available on this platform",
+        )));
 }
 
 #[test]

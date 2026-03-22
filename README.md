@@ -434,6 +434,7 @@ Autosubmit automatically runs saved `submit` arguments on a schedule.
 ```bash
 tokscale autosubmit enable --interval <Nh|Nd> [submit filters...]
 tokscale autosubmit status
+tokscale autosubmit run
 tokscale autosubmit disable
 ```
 

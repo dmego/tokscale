@@ -31,6 +31,10 @@ pub struct Settings {
     pub native_timeout_ms: u64,
     #[serde(default)]
     pub autosubmit: Option<AutosubmitConfig>,
+    #[serde(skip)]
+    invalid_autosubmit: Option<serde_json::Value>,
+    #[serde(skip)]
+    invalid_autosubmit_error: Option<String>,
 }
 
 fn default_color_palette() -> String {
@@ -54,6 +58,8 @@ impl Default for Settings {
             include_unused_models: false,
             native_timeout_ms: DEFAULT_NATIVE_TIMEOUT_MS,
             autosubmit: None,
+            invalid_autosubmit: None,
+            invalid_autosubmit_error: None,
         }
     }
 }
@@ -72,11 +78,10 @@ impl Settings {
     }
 
     pub fn load() -> Self {
-        Self::load_strict()
-            .or_else(|_| Self::load_without_autosubmit())
-            .unwrap_or_default()
+        Self::load_lenient().unwrap_or_default()
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn load_strict() -> Result<Self> {
         let path = Self::config_path()?;
         match fs::read_to_string(path) {
@@ -86,32 +91,55 @@ impl Settings {
         }
     }
 
-    fn load_without_autosubmit() -> Result<Self> {
+    pub fn load_lenient() -> Result<Self> {
         let path = Self::config_path()?;
         match fs::read_to_string(path) {
-            Ok(content) => Self::parse_without_autosubmit(&content),
+            Ok(content) => Self::parse_lenient(&content),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(err) => Err(err.into()),
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     fn parse_strict(content: &str) -> Result<Self> {
         let settings: Settings = serde_json::from_str(content)?;
         Ok(Self::clamp_values(settings))
     }
 
-    fn parse_without_autosubmit(content: &str) -> Result<Self> {
+    fn parse_lenient(content: &str) -> Result<Self> {
         let mut value: serde_json::Value = serde_json::from_str(content)?;
-        if let Some(object) = value.as_object_mut() {
-            object.remove("autosubmit");
-        }
+        let autosubmit = value
+            .as_object_mut()
+            .and_then(|object| object.remove("autosubmit"));
         let settings: Settings = serde_json::from_value(value)?;
-        Ok(Self::clamp_values(settings))
+        let mut settings = Self::clamp_values(settings);
+
+        match autosubmit {
+            Some(raw) if raw.is_null() => settings.autosubmit = None,
+            Some(raw) => match serde_json::from_value::<AutosubmitConfig>(raw.clone()) {
+                Ok(config) => settings.autosubmit = Some(config),
+                Err(err) => {
+                    settings.invalid_autosubmit = Some(raw);
+                    settings.invalid_autosubmit_error = Some(err.to_string());
+                }
+            },
+            None => settings.autosubmit = None,
+        }
+
+        Ok(settings)
     }
 
     pub fn save(&self) -> Result<()> {
         let path = Self::config_path()?;
-        let content = serde_json::to_string_pretty(self)?;
+        let mut value = serde_json::to_value(self)?;
+        if self.autosubmit.is_none() {
+            if let Some(raw) = &self.invalid_autosubmit {
+                if let Some(object) = value.as_object_mut() {
+                    object.insert("autosubmit".to_string(), raw.clone());
+                }
+            }
+        }
+        let content = serde_json::to_string_pretty(&value)?;
 
         // Atomic write: write to temp file, sync, then rename
         // Matches the pattern used in tui/cache.rs and pricing/cache.rs
@@ -143,6 +171,19 @@ impl Settings {
         }
 
         write_result
+    }
+
+    pub fn has_invalid_autosubmit(&self) -> bool {
+        self.invalid_autosubmit.is_some()
+    }
+
+    pub fn invalid_autosubmit_error(&self) -> Option<&str> {
+        self.invalid_autosubmit_error.as_deref()
+    }
+
+    pub fn clear_invalid_autosubmit(&mut self) {
+        self.invalid_autosubmit = None;
+        self.invalid_autosubmit_error = None;
     }
 
     pub fn theme_name(&self) -> ThemeName {
@@ -262,5 +303,34 @@ mod tests {
         assert!(loaded.include_unused_models);
         assert_eq!(loaded.native_timeout_ms, 120_000);
         assert!(loaded.autosubmit.is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn save_preserves_invalid_autosubmit_payload_after_lenient_load() {
+        let env = with_temp_config_dir();
+        write_settings_fixture(
+            env._temp.path(),
+            r#"{
+  "colorPalette": "purple",
+  "autoRefreshEnabled": true,
+  "autoRefreshMs": 45000,
+  "includeUnusedModels": true,
+  "nativeTimeoutMs": 120000,
+  "autosubmit": {
+    "enabled": true
+  }
+}"#,
+        );
+
+        let mut loaded = Settings::load();
+        loaded.color_palette = "green".to_string();
+        loaded.save().unwrap();
+
+        let saved = std::fs::read_to_string(Settings::config_path().unwrap()).unwrap();
+        let saved_json: serde_json::Value = serde_json::from_str(&saved).unwrap();
+
+        assert_eq!(saved_json["colorPalette"], "green");
+        assert_eq!(saved_json["autosubmit"]["enabled"], true);
     }
 }
