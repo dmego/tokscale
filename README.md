@@ -20,12 +20,14 @@
 <div align="center">
 
 [![GitHub Release](https://img.shields.io/github/v/release/junhoyeo/tokscale?color=0073FF&labelColor=black&logo=github&style=flat-square)](https://github.com/junhoyeo/tokscale/releases)
+[![npm Version](https://img.shields.io/npm/v/tokscale?color=0073FF&labelColor=black&style=flat-square&logo=npm)](https://www.npmjs.com/package/tokscale)
 [![npm Downloads](https://img.shields.io/npm/dt/tokscale?color=0073FF&labelColor=black&style=flat-square)](https://www.npmjs.com/package/tokscale)
 [![GitHub Contributors](https://img.shields.io/github/contributors/junhoyeo/tokscale?color=0073FF&labelColor=black&style=flat-square)](https://github.com/junhoyeo/tokscale/graphs/contributors)
 [![GitHub Forks](https://img.shields.io/github/forks/junhoyeo/tokscale?color=0073FF&labelColor=black&style=flat-square)](https://github.com/junhoyeo/tokscale/network/members)
 [![GitHub Stars](https://img.shields.io/github/stars/junhoyeo/tokscale?color=0073FF&labelColor=black&style=flat-square)](https://github.com/junhoyeo/tokscale/stargazers)
 [![GitHub Issues](https://img.shields.io/github/issues/junhoyeo/tokscale?color=0073FF&labelColor=black&style=flat-square)](https://github.com/junhoyeo/tokscale/issues)
 [![License](https://img.shields.io/badge/license-MIT-white?labelColor=black&style=flat-square)](https://github.com/junhoyeo/tokscale/blob/master/LICENSE)
+[![Coverage](https://raw.githubusercontent.com/junhoyeo/tokscale/refs/heads/main/.github/badges/coverage.svg)](https://github.com/junhoyeo/tokscale/issues/403)
 
 [🇺🇸 English](README.md) | [🇰🇷 한국어](README.ko.md) | [🇯🇵 日本語](README.ja.md) | [🇨🇳 简体中文](README.zh-cn.md)
 
@@ -53,20 +55,24 @@
 
 | Logo | Client | Data Location | Supported |
 |------|----------|---------------|-----------|
-| <img width="48px" src=".github/assets/client-opencode.png" alt="OpenCode" /> | [OpenCode](https://github.com/sst/opencode) | `~/.local/share/opencode/opencode.db` (1.2+) or/and `~/.local/share/opencode/storage/message/` (legacy/unmigrated) | ✅ Yes |
+| <img width="48px" src=".github/assets/client-opencode.png" alt="OpenCode" /> | [OpenCode](https://github.com/sst/opencode) | `~/.local/share/opencode/opencode.db` (1.2+, all channels including `opencode-stable.db`) or/and `~/.local/share/opencode/storage/message/` (legacy/unmigrated) | ✅ Yes |
 | <img width="48px" src=".github/assets/client-claude.jpg" alt="Claude" /> | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | `~/.claude/projects/` | ✅ Yes |
 | <img width="48px" src=".github/assets/client-openclaw.jpg" alt="OpenClaw" /> | [OpenClaw](https://openclaw.ai/) | `~/.openclaw/agents/` (+ legacy: `.clawdbot`, `.moltbot`, `.moldbot`) | ✅ Yes |
 | <img width="48px" src=".github/assets/client-openai.jpg" alt="Codex" /> | [Codex CLI](https://github.com/openai/codex) | `~/.codex/sessions/` | ✅ Yes |
+| <img width="48px" src=".github/assets/client-copilot.jpg" alt="Copilot" /> | [GitHub Copilot CLI](https://docs.github.com/en/copilot/how-tos/use-copilot-agents/use-the-github-copilot-coding-agent-in-cli) | `~/.copilot/otel/*.jsonl` (+ `COPILOT_OTEL_FILE_EXPORTER_PATH`) | ✅ Yes |
+| <img width="48px" src=".github/assets/client-hermes.png" alt="Hermes Agent" /> | [Hermes Agent](https://github.com/NousResearch/hermes-agent) | `$HERMES_HOME/state.db` (fallback: `~/.hermes/state.db`) | ✅ Yes |
 | <img width="48px" src=".github/assets/client-gemini.png" alt="Gemini" /> | [Gemini CLI](https://github.com/google-gemini/gemini-cli) | `~/.gemini/tmp/*/chats/*.json` | ✅ Yes |
 | <img width="48px" src=".github/assets/client-cursor.jpg" alt="Cursor" /> | [Cursor IDE](https://cursor.com/) | API sync via `~/.config/tokscale/cursor-cache/` | ✅ Yes |
 | <img width="48px" src=".github/assets/client-amp.png" alt="Amp" /> | [Amp (AmpCode)](https://ampcode.com/) | `~/.local/share/amp/threads/` | ✅ Yes |
 | <img width="48px" src=".github/assets/client-droid.png" alt="Droid" /> | [Droid (Factory Droid)](https://factory.ai/) | `~/.factory/sessions/` | ✅ Yes |
-| <img width="48px" src=".github/assets/client-pi.png" alt="Pi" /> | [Pi](https://github.com/badlogic/pi-mono) | `~/.pi/agent/sessions/` | ✅ Yes |
+| <img width="48px" src=".github/assets/client-pi.png" alt="Pi" /> | [Pi](https://github.com/badlogic/pi-mono) | `~/.pi/agent/sessions/` and `~/.omp/agent/sessions/` ([Oh My Pi](https://github.com/can1357/oh-my-pi)) | ✅ Yes |
 | <img width="48px" src=".github/assets/client-kimi.png" alt="Kimi" /> | [Kimi CLI](https://github.com/MoonshotAI/kimi-cli) | `~/.kimi/sessions/` | ✅ Yes |
 | <img width="48px" src=".github/assets/client-qwen.png" alt="Qwen" /> | [Qwen CLI](https://github.com/QwenLM/qwen-cli) | `~/.qwen/projects/` | ✅ Yes |
 | <img width="48px" src=".github/assets/client-roocode.png" alt="Roo Code" /> | [Roo Code](https://github.com/RooCodeInc/Roo-Code) | `~/.config/Code/User/globalStorage/rooveterinaryinc.roo-cline/tasks/` (+ server: `~/.vscode-server/data/User/globalStorage/rooveterinaryinc.roo-cline/tasks/`) | ✅ Yes |
 | <img width="48px" src=".github/assets/client-kilocode.png" alt="Kilo" /> | [Kilo](https://github.com/Kilo-Org/kilocode) | `~/.config/Code/User/globalStorage/kilocode.kilo-code/tasks/` (+ server: `~/.vscode-server/data/User/globalStorage/kilocode.kilo-code/tasks/`) | ✅ Yes |
 | <img width="48px" src=".github/assets/client-mux.png" alt="Mux" /> | [Mux](https://github.com/coder/mux) | `~/.mux/sessions/` | ✅ Yes |
+| <img width="48px" src=".github/assets/client-kilocode.png" alt="Kilo CLI" /> | [Kilo CLI](https://github.com/nicepkg/kilo) | `~/.local/share/kilo/kilo.db` | ✅ Yes |
+| <img width="48px" src=".github/assets/client-crush.png" alt="Crush" /> | [Crush](https://crush.ai/) | `$XDG_DATA_HOME/crush/projects.json` (project registry; fallback: `~/.local/share/crush/projects.json`) | ✅ Yes |
 | <img width="48px" src=".github/assets/client-synthetic.png" alt="Synthetic" /> | [Synthetic](https://synthetic.new/) | Re-attributed from other sources via `hf:` model prefix or `synthetic` provider (+ [Octofriend](https://github.com/synthetic-lab/octofriend): `~/.local/share/octofriend/sqlite.db`) | ✅ Yes |
 
 Get real-time pricing calculations using [🚅 LiteLLM's pricing data](https://github.com/BerriAI/litellm), with support for tiered pricing models and cache token discounts.
@@ -127,12 +133,12 @@ In the age of AI-assisted development, **tokens are the new energy**. They power
 ## Features
 
 - **Interactive TUI Mode** - Beautiful terminal UI powered by Ratatui (default mode)
-  - 4 interactive views: Overview, Models, Daily, Stats
+  - 6 interactive views: Overview, Models, Daily, Hourly, Stats, Agents
   - Keyboard & mouse navigation
   - GitHub-style contribution graph with 9 color themes
   - Real-time filtering and sorting
   - Zero flicker rendering
-- **Multi-platform support** - Track usage across OpenCode, Claude Code, Codex CLI, Cursor IDE, Gemini CLI, Amp, Droid, OpenClaw, Pi, Kimi CLI, Qwen CLI, Roo Code, Kilo, Mux, and Synthetic
+- **Multi-platform support** - Track usage across OpenCode, Claude Code, Codex CLI, Copilot CLI, Cursor IDE, Gemini CLI, Amp, Droid, OpenClaw, Hermes Agent, Pi, Kimi CLI, Qwen CLI, Roo Code, Kilo, Mux, Kilo CLI, Crush, and Synthetic
 - **Real-time pricing** - Fetches current pricing from LiteLLM with 1-hour disk cache; automatic OpenRouter fallback and Cursor model pricing for newly released models
 - **Detailed breakdowns** - Input, output, cache read/write, and reasoning token tracking
 - **Native Rust core** - All parsing and aggregation done in Rust for 10x faster processing
@@ -209,6 +215,7 @@ tokscale
 # Launch TUI with specific tab
 tokscale models    # Models tab
 tokscale monthly   # Daily view (shows daily breakdown)
+tokscale hourly    # Hourly tab
 
 # Use legacy CLI table output
 tokscale --light
@@ -231,9 +238,9 @@ tokscale models --json > report.json   # Save to file
 
 The interactive TUI mode provides:
 
-- **4 Views**: Overview (chart + top models), Models, Daily, Stats (contribution graph)
+- **6 Views**: Overview (chart + top models), Models, Daily, Hourly, Stats (contribution graph), Agents
 - **Keyboard Navigation**:
-  - `1-4` or `←/→/Tab`: Switch views
+  - `1-6` or `←/→/Tab`: Switch views
   - `↑/↓`: Navigate lists
   - `c/d/t`: Sort by cost/date/tokens
   - `s`: Open source picker dialog
@@ -290,6 +297,15 @@ tokscale --claude
 # Show only Codex CLI usage
 tokscale --codex
 
+# Show only Copilot CLI usage
+tokscale --copilot
+
+# Show only OpenClaw usage
+tokscale --openclaw
+
+# Show only Pi usage
+tokscale --pi
+
 # Show only Gemini CLI usage
 tokscale --gemini
 
@@ -302,11 +318,8 @@ tokscale --amp
 # Show only Droid usage
 tokscale --droid
 
-# Show only OpenClaw usage
-tokscale --openclaw
-
-# Show only Pi usage
-tokscale --pi
+# Show only Hermes Agent usage
+tokscale --hermes
 
 # Show only Kimi CLI usage
 tokscale --kimi
@@ -322,6 +335,12 @@ tokscale --kilocode
 
 # Show only Mux usage
 tokscale --mux
+
+# Show only Kilo CLI usage
+tokscale --kilo
+
+# Show only Crush usage
+tokscale --crush
 
 # Show only Synthetic (synthetic.new) usage
 tokscale --synthetic
@@ -504,7 +523,15 @@ Tokscale stores settings in `~/.config/tokscale/settings.json`:
 ```json
 {
   "colorPalette": "blue",
-  "includeUnusedModels": false
+  "includeUnusedModels": false,
+  "scanner": {
+    "extraScanPaths": {
+      "codex": [
+        "/Users/me/workspace/project-a/.codex/sessions",
+        "/Users/me/workspace/project-b/.codex/archived_sessions"
+      ]
+    }
+  }
 }
 ```
 
@@ -515,6 +542,9 @@ Tokscale stores settings in `~/.config/tokscale/settings.json`:
 | `autoRefreshEnabled` | boolean | `false` | Enable auto-refresh in TUI |
 | `autoRefreshMs` | number | `60000` | Auto-refresh interval (30000-3600000ms) |
 | `nativeTimeoutMs` | number | `300000` | Maximum time for native subprocess processing (5000-3600000ms) |
+| `scanner.extraScanPaths` | object | `{}` | Additional per-client scan roots for sessions outside Tokscale's default home-root locations |
+
+Use `scanner.extraScanPaths` for persistent extra roots such as project-level `.codex` directories or imported Gemini/OpenClaw histories. Tokscale merges these paths with the default scan roots on every run and deduplicates overlapping roots by canonical path.
 
 ### Environment Variables
 
@@ -523,13 +553,17 @@ Environment variables override config file values. For CI/CD or one-off use:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `TOKSCALE_NATIVE_TIMEOUT_MS` | `300000` (5 min) | Overrides `nativeTimeoutMs` config |
+| `TOKSCALE_EXTRA_DIRS` | unset | One-off extra session roots as `client:/abs/path,client:/abs/path` |
 
 ```bash
 # Example: Increase timeout for very large datasets
 TOKSCALE_NATIVE_TIMEOUT_MS=600000 tokscale graph --output data.json
+
+# Example: one-off extra scan roots
+TOKSCALE_EXTRA_DIRS='codex:/Users/me/workspace/project-a/.codex/sessions,gemini:/Users/me/imports/imac/gemini/tmp' tokscale
 ```
 
-> **Note**: For persistent changes, prefer setting `nativeTimeoutMs` in `~/.config/tokscale/settings.json`. Environment variables are best for one-off overrides or CI/CD.
+> **Note**: For persistent extra roots, prefer `scanner.extraScanPaths` in `~/.config/tokscale/settings.json`. `TOKSCALE_EXTRA_DIRS` is best for one-off overrides or CI/CD.
 
 ### Headless Mode
 
@@ -605,7 +639,7 @@ The frontend provides a GitHub-style contribution graph visualization:
 - **Interactive tooltips**: Hover for detailed daily breakdowns
 - **Day breakdown panel**: Click to see per-source and per-model details
 - **Year filtering**: Navigate between years
-- **Source filtering**: Filter by platform (OpenCode, Claude, Codex, Cursor, Gemini, Amp, Droid, OpenClaw, Pi, Kimi, Qwen, Roo Code, Kilo, Mux, Synthetic)
+- **Source filtering**: Filter by platform (OpenCode, Claude, Codex, Copilot, Cursor, Gemini, Amp, Droid, OpenClaw, Hermes Agent, Pi, Kimi, Qwen, Roo Code, Kilo, Mux, Kilo CLI, Crush, Synthetic)
 - **Stats panel**: Total cost, tokens, active days, streaks
 - **FOUC prevention**: Theme applied before React hydrates (no flash)
 
@@ -646,6 +680,26 @@ You can embed your public Tokscale stats directly in your GitHub profile README:
   - `compact=1` to use compact layout + compact number notation (e.g., `1.2M`, `$3.4K`)
 - Example:
   - `https://tokscale.ai/api/embed/<username>/svg?theme=light&sort=cost&compact=1`
+
+### GitHub Profile Badge
+
+You can also use a shields.io-style badge for a more compact display:
+
+```md
+![Tokscale Tokens](https://tokscale.ai/api/badge/<username>/svg)
+```
+
+- Replace `<username>` with your GitHub username
+- Optional query params:
+  - `metric=tokens` (default), `metric=cost`, or `metric=rank`
+  - `style=flat` (default) or `style=flat-square`
+  - `sort=tokens` (default) or `sort=cost` to control ranking basis
+  - `compact=1` to use compact number notation (e.g., `1.2M`, `$3.4K`)
+  - `label=<text>` to override the left-side label
+  - `color=<hex>` to override the right-side color (e.g., `color=ff5733`)
+- Examples:
+  - `https://tokscale.ai/api/badge/<username>/svg?metric=cost&compact=1`
+  - `https://tokscale.ai/api/badge/<username>/svg?metric=rank&sort=cost&style=flat-square`
 
 ### Getting Started
 
@@ -720,10 +774,10 @@ After following the [Development Setup](#development-setup), you can:
 bun run build:core
 
 # Run in development mode (launches TUI)
-cd packages/cli && bun src/cli.ts
+cd packages/cli && bun src/index.ts
 
 # Or use legacy CLI mode
-cd packages/cli && bun src/cli.ts --light
+cd packages/cli && bun src/index.ts --light
 ```
 
 <details>
@@ -878,16 +932,20 @@ AI coding tools store their session data in cross-platform locations. Most tools
 | Claude Code | `~/.claude/` | `%USERPROFILE%\.claude\` | Same path on all platforms |
 | OpenClaw | `~/.openclaw/` (+ legacy: `.clawdbot`, `.moltbot`, `.moldbot`) | `%USERPROFILE%\.openclaw\` (+ legacy paths) | Same path on all platforms |
 | Codex CLI | `~/.codex/` | `%USERPROFILE%\.codex\` | Configurable via `CODEX_HOME` env var ([source](https://github.com/openai/codex)) |
+| Copilot CLI | `~/.copilot/otel/` | `%USERPROFILE%\.copilot\otel\` | Requires OTEL file export; also auto-ingests `COPILOT_OTEL_FILE_EXPORTER_PATH` |
+| Hermes Agent | `~/.hermes/` | `%USERPROFILE%\.hermes\` | Configurable via `HERMES_HOME` env var ([source](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/developer-guide/session-storage.md)) |
 | Gemini CLI | `~/.gemini/` | `%USERPROFILE%\.gemini\` | Same path on all platforms |
 | Amp | `~/.local/share/amp/` | `%USERPROFILE%\.local\share\amp\` | Uses `xdg-basedir` like OpenCode |
 | Cursor | API sync | API sync | Data fetched via API, cached in `%USERPROFILE%\.config\tokscale\cursor-cache\` |
 | Droid | `~/.factory/` | `%USERPROFILE%\.factory\` | Same path on all platforms |
-| Pi | `~/.pi/` | `%USERPROFILE%\.pi\` | Same path on all platforms |
+| Pi | `~/.pi/` and `~/.omp/` | `%USERPROFILE%\.pi\` and `%USERPROFILE%\.omp\` | Same path on all platforms (supports both Pi and [Oh My Pi](https://github.com/can1357/oh-my-pi)) |
 | Kimi CLI | `~/.kimi/` | `%USERPROFILE%\.kimi\` | Same path on all platforms |
 | Qwen CLI | `~/.qwen/` | `%USERPROFILE%\.qwen\` | Same path on all platforms |
 | Roo Code | `~/.config/Code/User/globalStorage/rooveterinaryinc.roo-cline/tasks/` | `%USERPROFILE%\.config\Code\User\globalStorage\rooveterinaryinc.roo-cline\tasks\` | VS Code globalStorage task logs |
 | Kilo | `~/.config/Code/User/globalStorage/kilocode.kilo-code/tasks/` | `%USERPROFILE%\.config\Code\User\globalStorage\kilocode.kilo-code\tasks\` | VS Code globalStorage task logs |
 | Mux | `~/.mux/sessions/` | `%USERPROFILE%\.mux\sessions\` | Same path on all platforms |
+| Kilo CLI | `~/.local/share/kilo/` | `%USERPROFILE%\.local\share\kilo\` | Uses `xdg-basedir` like OpenCode |
+| Crush | `$XDG_DATA_HOME/crush/` (fallback: `~/.local/share/crush/`) | `%USERPROFILE%\.local\share\crush\` (or `%XDG_DATA_HOME%\crush\` if set) | Uses XDG data directory with fallback |
 | Synthetic | Re-attributed from other sources | Re-attributed from other sources | Detects `hf:` model prefix + `synthetic` provider |
 
 > **Note**: On Windows, `~` expands to `%USERPROFILE%` (e.g., `C:\Users\YourName`). These tools intentionally use Unix-style paths (like `.local/share`) even on Windows for cross-platform consistency, rather than Windows-native paths like `%APPDATA%`.
@@ -976,6 +1034,42 @@ Location: `~/.local/share/opencode/opencode.db` (v1.2+) or `storage/message/{ses
 
 OpenCode 1.2+ stores sessions in SQLite. Tokscale reads from SQLite first and falls back to legacy JSON files for older versions.
 
+OpenCode picks the db filename from the release channel the binary was built against: the `latest` and `beta` channels use `opencode.db`, while other channels use `opencode-<channel>.db` (e.g. `opencode-stable.db`, `opencode-nightly.db`). Tokscale scans all of them, so users running multiple channels side by side get a unified view.
+
+If you launched opencode with `OPENCODE_DB` pointing at a file outside `~/.local/share/opencode`, add the absolute path to `~/.config/tokscale/settings.json` so tokscale can find it on every run:
+
+```json
+{
+  "scanner": {
+    "opencodeDbPaths": [
+      "/custom/location/opencode.db",
+      "/another/location/opencode-stable.db"
+    ]
+  }
+}
+```
+
+Paths are merged with auto-discovery, deduped by canonical path, and non-existent entries are silently skipped (so stale config never breaks a scan). `opencode.db-wal`, `opencode.db-shm`, and other SQLite sidecars are rejected.
+
+If you keep sessions outside Tokscale's default home-root locations, you can also persist extra scan roots per client:
+
+```json
+{
+  "scanner": {
+    "extraScanPaths": {
+      "codex": [
+        "/Users/me/workspace/project-a/.codex/sessions",
+        "/Users/me/workspace/project-b/.codex/archived_sessions"
+      ],
+      "gemini": ["/Users/me/imports/imac/gemini/tmp"],
+      "openclaw": ["/Users/me/imports/imac/openclaw/agents"]
+    }
+  }
+}
+```
+
+This is useful for project-level `.codex` directories and imported histories. Tokscale still scans its default roots, then merges `scanner.extraScanPaths` and `TOKSCALE_EXTRA_DIRS` on top with canonical-path deduplication. It does not auto-discover your whole workspace.
+
 Each message contains:
 ```json
 {
@@ -1010,6 +1104,39 @@ Event-based format with `token_count` events:
 ```json
 {"type": "event_msg", "payload": {"type": "token_count", "info": {"last_token_usage": {"input_tokens": 1234, "output_tokens": 567}}}}
 ```
+
+### Copilot CLI
+
+Location: `~/.copilot/otel/*.jsonl` or the explicit path in `COPILOT_OTEL_FILE_EXPORTER_PATH`
+
+Copilot support reads file-exported OpenTelemetry JSONL. Enable it before running Copilot:
+
+```bash
+export COPILOT_OTEL_ENABLED=true
+export COPILOT_OTEL_EXPORTER_TYPE=file
+mkdir -p "$HOME/.copilot/otel"
+export COPILOT_OTEL_FILE_EXPORTER_PATH="$HOME/.copilot/otel/copilot-otel-$(date +%Y%m%d-%H%M%S).jsonl"
+```
+
+PowerShell:
+
+```powershell
+$otelDir = "$HOME/.copilot/otel"
+New-Item -ItemType Directory -Force -Path $otelDir | Out-Null
+$env:COPILOT_OTEL_ENABLED = "true"
+$env:COPILOT_OTEL_EXPORTER_TYPE = "file"
+$env:COPILOT_OTEL_FILE_EXPORTER_PATH = Join-Path $otelDir ("copilot-otel-{0}.jsonl" -f (Get-Date -Format "yyyyMMdd-HHmmss"))
+```
+
+Using a timestamped filename is recommended so each Copilot session writes to a fresh file instead of accumulating into one huge OTEL log.
+
+Tokscale treats `chat` spans as the source of truth for token accounting and ignores tool spans plus cumulative metrics in phase 1:
+
+```json
+{"type":"span","name":"chat gpt-5.4-mini","attributes":{"gen_ai.operation.name":"chat","gen_ai.response.model":"gpt-5.4-mini","gen_ai.conversation.id":"session-id","gen_ai.usage.input_tokens":1234,"gen_ai.usage.output_tokens":567,"gen_ai.usage.cache_read.input_tokens":890,"gen_ai.usage.reasoning.output_tokens":123}}
+```
+
+> Copilot's OTEL payloads currently do not expose stable workspace metadata, so Copilot rows may appear without workspace attribution. Tokscale prices these rows from the reported model when possible and does not trust `github.copilot.cost` directly.
 
 ### Gemini CLI
 
@@ -1051,9 +1178,15 @@ Session JSONL format with model_change events and assistant messages:
 {"type":"message","message":{"role":"assistant","usage":{"input":1660,"output":55,"cacheRead":108928,"cost":{"total":0.02}},"timestamp":1769753935279}}
 ```
 
+### Hermes Agent
+
+Location: `$HERMES_HOME/state.db` (fallback: `~/.hermes/state.db`)
+
+Hermes stores session-level usage in a SQLite `sessions` table. Tokscale imports rows where `model` is present and token or cost totals are non-zero, uses `started_at` as the timestamp, preserves `message_count`, and prefers `actual_cost_usd` over `estimated_cost_usd`.
+
 ### Pi
 
-Location: `~/.pi/agent/sessions/<encoded-cwd>/*.jsonl`
+Location: `~/.pi/agent/sessions/<encoded-cwd>/*.jsonl` and `~/.omp/agent/sessions/<encoded-cwd>/*.jsonl` ([Oh My Pi](https://github.com/can1357/oh-my-pi))
 
 JSONL format with session header and message entries:
 ```json
@@ -1125,6 +1258,18 @@ Mux stores cumulative per-session token usage in `session-usage.json` files. Eac
 - `input`, `cached` (cache reads), `cacheCreate` (cache writes), `output`, `reasoning`
 - Model names use `provider:model` format (e.g., `anthropic:claude-opus-4-6`) — tokscale strips the provider prefix for model identification
 - Sub-agent usage is automatically rolled up into parent sessions by Mux, so there is no double-counting
+
+### Kilo CLI
+
+Location: `~/.local/share/kilo/kilo.db`
+
+Kilo CLI stores session data in a SQLite database similar to OpenCode. Each message row contains per-message token breakdowns (input, output, cache read/write, reasoning) with model and provider attribution.
+
+### Crush
+
+Location: Project-level SQLite databases discovered via `$XDG_DATA_HOME/crush/projects.json` (fallback: `~/.local/share/crush/projects.json`)
+
+Crush stores usage in per-project SQLite databases (`crush.db`). Tokscale imports session-level cost totals from root sessions only, because Crush does not expose reliable per-message or per-model token accounting. Records appear as `model=session-total` with zero token breakdown.
 
 ### Synthetic (synthetic.new)
 

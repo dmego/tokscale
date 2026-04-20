@@ -3,23 +3,23 @@
 //! This module provides disk-based caching for TUI data to enable instant UI display
 //! while fresh data loads in the background (matching TypeScript implementation behavior).
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use tokscale_core::ClientId;
+use tokscale_core::{ClientId, GroupBy};
 
 use super::data::{
-    AgentUsage, ContributionDay, DailyModelInfo, DailyUsage, GraphData, ModelUsage, TokenBreakdown,
-    UsageData,
+    AgentUsage, ContributionDay, DailyModelInfo, DailySourceInfo, DailyUsage, GraphData,
+    HourlyModelInfo, HourlyUsage, ModelUsage, TokenBreakdown, UsageData,
 };
 
 /// Cache staleness threshold: 5 minutes (matches TS implementation)
 const CACHE_STALE_THRESHOLD_MS: u64 = 5 * 60 * 1000;
-const CACHE_SCHEMA_VERSION: u32 = 2;
+const CACHE_SCHEMA_VERSION: u32 = 5;
 
 /// Get the cache directory path
 /// Uses `~/.cache/tokscale/` to match TypeScript implementation for cache sharing
@@ -42,6 +42,8 @@ struct CachedTUIData {
     enabled_clients: Vec<String>,
     #[serde(default)]
     include_synthetic: bool,
+    #[serde(default)]
+    group_by: Option<String>,
     data: CachedUsageData,
 }
 
@@ -53,6 +55,8 @@ struct CachedUsageData {
     #[serde(default)]
     agents: Vec<CachedAgentUsage>,
     daily: Vec<CachedDailyUsage>,
+    #[serde(default)]
+    hourly: Vec<CachedHourlyUsage>,
     graph: Option<CachedGraphData>,
     total_tokens: u64,
     total_cost: f64,
@@ -76,6 +80,10 @@ struct CachedModelUsage {
     model: String,
     provider: String,
     client: String,
+    #[serde(default)]
+    workspace_key: Option<String>,
+    #[serde(default)]
+    workspace_label: Option<String>,
     tokens: CachedTokenBreakdown,
     cost: f64,
     session_count: u32,
@@ -94,9 +102,26 @@ struct CachedAgentUsage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CachedDailyModelInfo {
+    #[serde(default)]
     client: String,
+    #[serde(default)]
+    provider: String,
+    #[serde(default)]
+    display_name: String,
+    #[serde(default)]
+    color_key: String,
     tokens: CachedTokenBreakdown,
     cost: f64,
+    #[serde(default)]
+    messages: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CachedDailySourceInfo {
+    tokens: CachedTokenBreakdown,
+    cost: f64,
+    models: Vec<(String, CachedDailyModelInfo)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -105,7 +130,41 @@ struct CachedDailyUsage {
     date: String, // NaiveDate serialized as string
     tokens: CachedTokenBreakdown,
     cost: f64,
-    models: Vec<(String, CachedDailyModelInfo)>, // HashMap as vec of tuples
+    #[serde(default)]
+    models: Vec<(String, CachedDailyModelInfo)>,
+    #[serde(default)]
+    source_breakdown: Vec<(String, CachedDailySourceInfo)>,
+    #[serde(default)]
+    message_count: u32,
+    #[serde(default)]
+    turn_count: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CachedHourlyModelInfo {
+    #[serde(default)]
+    provider: String,
+    #[serde(default)]
+    display_name: String,
+    #[serde(default)]
+    color_key: String,
+    tokens: CachedTokenBreakdown,
+    cost: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CachedHourlyUsage {
+    datetime: String, // NaiveDateTime as "YYYY-MM-DD HH:MM:SS"
+    tokens: CachedTokenBreakdown,
+    cost: f64,
+    clients: Vec<String>,
+    models: Vec<(String, CachedHourlyModelInfo)>,
+    #[serde(default)]
+    message_count: u32,
+    #[serde(default)]
+    turn_count: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -155,6 +214,8 @@ impl From<&ModelUsage> for CachedModelUsage {
             model: m.model.clone(),
             provider: m.provider.clone(),
             client: m.client.clone(),
+            workspace_key: m.workspace_key.clone(),
+            workspace_label: m.workspace_label.clone(),
             tokens: (&m.tokens).into(),
             cost: m.cost,
             session_count: m.session_count,
@@ -168,6 +229,8 @@ impl From<CachedModelUsage> for ModelUsage {
             model: m.model,
             provider: m.provider,
             client: m.client,
+            workspace_key: m.workspace_key,
+            workspace_label: m.workspace_label,
             tokens: m.tokens.into(),
             cost: m.cost,
             session_count: m.session_count,
@@ -202,20 +265,148 @@ impl From<CachedAgentUsage> for AgentUsage {
 impl From<&DailyModelInfo> for CachedDailyModelInfo {
     fn from(d: &DailyModelInfo) -> Self {
         Self {
-            client: d.client.clone(),
+            client: String::new(),
+            provider: d.provider.clone(),
+            display_name: d.display_name.clone(),
+            color_key: d.color_key.clone(),
             tokens: (&d.tokens).into(),
             cost: d.cost,
+            messages: d.messages,
         }
     }
 }
 
-impl From<CachedDailyModelInfo> for DailyModelInfo {
-    fn from(d: CachedDailyModelInfo) -> Self {
+fn daily_model_info_from_cached(key: &str, value: CachedDailyModelInfo) -> DailyModelInfo {
+    let display_name = if value.display_name.is_empty() {
+        key.to_string()
+    } else {
+        value.display_name
+    };
+    let color_key = if value.color_key.is_empty() {
+        display_name
+            .rsplit_once(" / ")
+            .map(|(_, base_model)| base_model.to_string())
+            .unwrap_or_else(|| display_name.clone())
+    } else {
+        value.color_key
+    };
+
+    DailyModelInfo {
+        provider: value.provider,
+        display_name,
+        color_key,
+        tokens: value.tokens.into(),
+        cost: value.cost,
+        messages: value.messages,
+    }
+}
+
+impl From<&DailySourceInfo> for CachedDailySourceInfo {
+    fn from(source: &DailySourceInfo) -> Self {
         Self {
-            client: d.client,
-            tokens: d.tokens.into(),
-            cost: d.cost,
+            tokens: (&source.tokens).into(),
+            cost: source.cost,
+            models: source
+                .models
+                .iter()
+                .map(|(key, value)| (key.clone(), value.into()))
+                .collect(),
         }
+    }
+}
+
+impl From<CachedDailySourceInfo> for DailySourceInfo {
+    fn from(source: CachedDailySourceInfo) -> Self {
+        Self {
+            tokens: source.tokens.into(),
+            cost: source.cost,
+            models: source
+                .models
+                .into_iter()
+                .map(|(key, value)| {
+                    let model_info = daily_model_info_from_cached(&key, value);
+                    (key, model_info)
+                })
+                .collect(),
+        }
+    }
+}
+
+impl From<&HourlyModelInfo> for CachedHourlyModelInfo {
+    fn from(h: &HourlyModelInfo) -> Self {
+        Self {
+            provider: h.provider.clone(),
+            display_name: h.display_name.clone(),
+            color_key: h.color_key.clone(),
+            tokens: (&h.tokens).into(),
+            cost: h.cost,
+        }
+    }
+}
+
+fn hourly_model_info_from_cached(key: &str, value: CachedHourlyModelInfo) -> HourlyModelInfo {
+    let display_name = if value.display_name.is_empty() {
+        key.to_string()
+    } else {
+        value.display_name
+    };
+    let color_key = if value.color_key.is_empty() {
+        display_name
+            .rsplit_once(" / ")
+            .map(|(_, base_model)| base_model.to_string())
+            .unwrap_or_else(|| display_name.clone())
+    } else {
+        value.color_key
+    };
+
+    HourlyModelInfo {
+        provider: value.provider,
+        display_name,
+        color_key,
+        tokens: value.tokens.into(),
+        cost: value.cost,
+    }
+}
+
+impl From<&HourlyUsage> for CachedHourlyUsage {
+    fn from(h: &HourlyUsage) -> Self {
+        Self {
+            datetime: h.datetime.format("%Y-%m-%d %H:%M:%S").to_string(),
+            tokens: (&h.tokens).into(),
+            cost: h.cost,
+            clients: h.clients.iter().cloned().collect(),
+            models: h
+                .models
+                .iter()
+                .map(|(k, v)| (k.clone(), v.into()))
+                .collect(),
+            message_count: h.message_count,
+            turn_count: h.turn_count,
+        }
+    }
+}
+
+impl TryFrom<CachedHourlyUsage> for HourlyUsage {
+    type Error = chrono::ParseError;
+
+    fn try_from(h: CachedHourlyUsage) -> Result<Self, Self::Error> {
+        use chrono::NaiveDateTime;
+        Ok(Self {
+            datetime: NaiveDateTime::parse_from_str(&h.datetime, "%Y-%m-%d %H:%M:%S")?,
+            tokens: h.tokens.into(),
+            cost: h.cost,
+            clients: h.clients.into_iter().collect(),
+            models: h
+                .models
+                .into_iter()
+                .map(|(key, value)| {
+                    let model_info = hourly_model_info_from_cached(&key, value);
+                    (key, model_info)
+                })
+                .collect(),
+            message_count: h.message_count,
+            turn_count: h.turn_count,
+        })
     }
 }
 
@@ -225,11 +416,14 @@ impl From<&DailyUsage> for CachedDailyUsage {
             date: d.date.to_string(),
             tokens: (&d.tokens).into(),
             cost: d.cost,
-            models: d
-                .models
+            models: Vec::new(),
+            source_breakdown: d
+                .source_breakdown
                 .iter()
-                .map(|(k, v)| (k.clone(), v.into()))
+                .map(|(key, value)| (key.clone(), value.into()))
                 .collect(),
+            message_count: d.message_count,
+            turn_count: d.turn_count,
         }
     }
 }
@@ -239,11 +433,58 @@ impl TryFrom<CachedDailyUsage> for DailyUsage {
 
     fn try_from(d: CachedDailyUsage) -> Result<Self, Self::Error> {
         use chrono::NaiveDate;
+
+        let source_breakdown = if d.source_breakdown.is_empty() {
+            let mut legacy_sources: BTreeMap<String, DailySourceInfo> = BTreeMap::new();
+            for (key, value) in d.models {
+                let client = if value.client.is_empty() {
+                    "unknown".to_string()
+                } else {
+                    value.client.clone()
+                };
+                let model_info = daily_model_info_from_cached(&key, value);
+                let source = legacy_sources
+                    .entry(client)
+                    .or_insert_with(|| DailySourceInfo {
+                        tokens: TokenBreakdown::default(),
+                        cost: 0.0,
+                        models: BTreeMap::new(),
+                    });
+                source.tokens.input = source.tokens.input.saturating_add(model_info.tokens.input);
+                source.tokens.output = source
+                    .tokens
+                    .output
+                    .saturating_add(model_info.tokens.output);
+                source.tokens.cache_read = source
+                    .tokens
+                    .cache_read
+                    .saturating_add(model_info.tokens.cache_read);
+                source.tokens.cache_write = source
+                    .tokens
+                    .cache_write
+                    .saturating_add(model_info.tokens.cache_write);
+                source.tokens.reasoning = source
+                    .tokens
+                    .reasoning
+                    .saturating_add(model_info.tokens.reasoning);
+                source.cost += model_info.cost;
+                source.models.insert(key, model_info);
+            }
+            legacy_sources
+        } else {
+            d.source_breakdown
+                .into_iter()
+                .map(|(key, value)| (key, value.into()))
+                .collect()
+        };
+
         Ok(Self {
             date: NaiveDate::parse_from_str(&d.date, "%Y-%m-%d")?,
             tokens: d.tokens.into(),
             cost: d.cost,
-            models: d.models.into_iter().map(|(k, v)| (k, v.into())).collect(),
+            source_breakdown,
+            message_count: d.message_count,
+            turn_count: d.turn_count,
         })
     }
 }
@@ -312,6 +553,7 @@ impl From<&UsageData> for CachedUsageData {
             models: u.models.iter().map(|m| m.into()).collect(),
             agents: u.agents.iter().map(|a| a.into()).collect(),
             daily: u.daily.iter().map(|d| d.into()).collect(),
+            hourly: u.hourly.iter().map(|h| h.into()).collect(),
             graph: u.graph.as_ref().map(|g| g.into()),
             total_tokens: u.total_tokens,
             total_cost: u.total_cost,
@@ -326,12 +568,15 @@ impl TryFrom<CachedUsageData> for UsageData {
 
     fn try_from(u: CachedUsageData) -> Result<Self, Self::Error> {
         let daily: Result<Vec<DailyUsage>, _> = u.daily.into_iter().map(|d| d.try_into()).collect();
+        let hourly: Result<Vec<HourlyUsage>, _> =
+            u.hourly.into_iter().map(|h| h.try_into()).collect();
         let graph: Option<Result<GraphData, _>> = u.graph.map(|g| g.try_into());
 
         Ok(Self {
             models: u.models.into_iter().map(|m| m.into()).collect(),
             agents: u.agents.into_iter().map(|a| a.into()).collect(),
             daily: daily?,
+            hourly: hourly?,
             graph: graph.transpose()?,
             total_tokens: u.total_tokens,
             total_cost: u.total_cost,
@@ -368,7 +613,11 @@ enum ClientMatch {
 /// Load cached TUI data from disk with a single read/parse.
 /// Returns Fresh/Stale/Miss so the caller can decide whether to
 /// display cached data immediately and/or trigger a background refresh.
-pub fn load_cache(enabled_clients: &HashSet<ClientId>, include_synthetic: bool) -> CacheResult {
+pub fn load_cache(
+    enabled_clients: &HashSet<ClientId>,
+    include_synthetic: bool,
+    group_by: &GroupBy,
+) -> CacheResult {
     let Some(cache_path) = cache_file() else {
         return CacheResult::Miss;
     };
@@ -388,6 +637,17 @@ pub fn load_cache(enabled_clients: &HashSet<ClientId>, include_synthetic: bool) 
         return CacheResult::Miss;
     }
     let schema_outdated = cached.schema_version < CACHE_SCHEMA_VERSION;
+    let cached_group_by = cached
+        .group_by
+        .as_deref()
+        .and_then(|value| value.parse::<GroupBy>().ok());
+    if schema_outdated && cached_group_by.is_none() {
+        return CacheResult::Miss;
+    }
+
+    if cached_group_by.as_ref() != Some(group_by) {
+        return CacheResult::Miss;
+    }
 
     // Check how cached clients relate to enabled clients
     let client_match = check_client_match(
@@ -466,6 +726,7 @@ pub fn save_cached_data(
     data: &UsageData,
     enabled_clients: &HashSet<ClientId>,
     include_synthetic: bool,
+    group_by: &GroupBy,
 ) {
     let Some(cache_path) = cache_file() else {
         return;
@@ -491,6 +752,7 @@ pub fn save_cached_data(
             .map(|s| s.as_str().to_string())
             .collect(),
         include_synthetic,
+        group_by: Some(group_by.to_string()),
         data: data.into(),
     };
 
@@ -624,7 +886,7 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_load_cache_returns_stale_for_legacy_schema_without_version() {
+    fn test_load_cache_misses_for_legacy_schema_without_group_by() {
         let temp_dir = TempDir::new().unwrap();
         let previous_home = env::var_os("HOME");
         unsafe {
@@ -653,11 +915,421 @@ mod tests {
         .unwrap();
 
         let clients = make_clients(&[ClientId::Claude]);
-        assert!(matches!(load_cache(&clients, false), CacheResult::Stale(_)));
+        assert!(matches!(
+            load_cache(&clients, false, &GroupBy::Model),
+            CacheResult::Miss
+        ));
 
         match previous_home {
             Some(home) => unsafe { env::set_var("HOME", home) },
             None => unsafe { env::remove_var("HOME") },
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_load_cache_misses_when_group_by_differs() {
+        let temp_dir = TempDir::new().unwrap();
+        let previous_home = env::var_os("HOME");
+        unsafe {
+            env::set_var("HOME", temp_dir.path());
+        }
+
+        let cache_path = cache_file().unwrap();
+        fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
+        fs::write(
+            &cache_path,
+            r#"{
+  "schemaVersion": 4,
+  "timestamp": 9999999999999,
+  "enabledClients": ["claude"],
+  "includeSynthetic": false,
+  "groupBy": "model",
+  "data": {
+    "models": [],
+    "daily": [],
+    "graph": null,
+    "totalTokens": 0,
+    "totalCost": 0.0,
+    "currentStreak": 0,
+    "longestStreak": 0
+  }
+}"#,
+        )
+        .unwrap();
+
+        let clients = make_clients(&[ClientId::Claude]);
+        assert!(matches!(
+            load_cache(&clients, false, &GroupBy::WorkspaceModel),
+            CacheResult::Miss
+        ));
+
+        match previous_home {
+            Some(home) => unsafe { env::set_var("HOME", home) },
+            None => unsafe { env::remove_var("HOME") },
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_load_cache_stale_legacy_daily_models_without_display_fields() {
+        let temp_dir = TempDir::new().unwrap();
+        let previous_home = env::var_os("HOME");
+        unsafe {
+            env::set_var("HOME", temp_dir.path());
+        }
+
+        let cache_path = cache_file().unwrap();
+        fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
+        fs::write(
+            &cache_path,
+            r#"{
+  "schemaVersion": 3,
+  "timestamp": 9999999999999,
+  "enabledClients": ["claude"],
+  "includeSynthetic": false,
+  "groupBy": "model",
+  "data": {
+    "models": [],
+    "agents": [],
+    "daily": [{
+      "date": "2026-03-18",
+      "tokens": {
+        "input": 10,
+        "output": 5,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "reasoning": 0
+      },
+      "cost": 1.25,
+      "models": [[
+        "claude-sonnet-4-5",
+        {
+          "client": "claude",
+          "tokens": {
+            "input": 10,
+            "output": 5,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "reasoning": 0
+          },
+          "cost": 1.25
+        }
+      ]]
+    }],
+    "graph": null,
+    "totalTokens": 15,
+    "totalCost": 1.25,
+    "currentStreak": 1,
+    "longestStreak": 1
+  }
+}"#,
+        )
+        .unwrap();
+
+        let clients = make_clients(&[ClientId::Claude]);
+        match load_cache(&clients, false, &GroupBy::Model) {
+            CacheResult::Stale(data) => {
+                let source = data.daily[0].source_breakdown.get("claude").unwrap();
+                let daily_model = source.models.get("claude-sonnet-4-5").unwrap();
+                assert_eq!(daily_model.display_name, "claude-sonnet-4-5");
+                assert_eq!(daily_model.color_key, "claude-sonnet-4-5");
+            }
+            other => panic!(
+                "expected stale legacy cache, got {:?}",
+                other_variant_name(&other)
+            ),
+        }
+
+        match previous_home {
+            Some(home) => unsafe { env::set_var("HOME", home) },
+            None => unsafe { env::remove_var("HOME") },
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_load_cache_reads_source_breakdown_from_current_schema() {
+        let temp_dir = TempDir::new().unwrap();
+        let previous_home = env::var_os("HOME");
+        unsafe {
+            env::set_var("HOME", temp_dir.path());
+        }
+
+        let cache_path = cache_file().unwrap();
+        fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
+        fs::write(
+            &cache_path,
+            r#"{
+  "schemaVersion": 5,
+  "timestamp": 9999999999999,
+  "enabledClients": ["claude", "cursor"],
+  "includeSynthetic": false,
+  "groupBy": "model",
+  "data": {
+    "models": [],
+    "agents": [],
+    "daily": [{
+      "date": "2026-03-18",
+      "tokens": {
+        "input": 30,
+        "output": 15,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "reasoning": 0
+      },
+      "cost": 3.25,
+      "sourceBreakdown": [[
+        "claude",
+        {
+          "tokens": {
+            "input": 10,
+            "output": 5,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "reasoning": 0
+          },
+          "cost": 1.25,
+          "models": [[
+            "claude-sonnet-4-5",
+            {
+              "provider": "anthropic",
+              "displayName": "claude-sonnet-4-5",
+              "colorKey": "claude-sonnet-4-5",
+              "tokens": {
+                "input": 10,
+                "output": 5,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "reasoning": 0
+              },
+              "cost": 1.25
+            }
+          ]]
+        }
+      ], [
+        "cursor",
+        {
+          "tokens": {
+            "input": 20,
+            "output": 10,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "reasoning": 0
+          },
+          "cost": 2.0,
+          "models": [[
+            "claude-sonnet-4-5",
+            {
+              "provider": "anthropic",
+              "displayName": "claude-sonnet-4-5",
+              "colorKey": "claude-sonnet-4-5",
+              "tokens": {
+                "input": 20,
+                "output": 10,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "reasoning": 0
+              },
+              "cost": 2.0
+            }
+          ]]
+        }
+      ]]
+    }],
+    "graph": null,
+    "totalTokens": 45,
+    "totalCost": 3.25,
+    "currentStreak": 1,
+    "longestStreak": 1
+  }
+}"#,
+        )
+        .unwrap();
+
+        let clients = make_clients(&[ClientId::Claude, ClientId::Cursor]);
+        match load_cache(&clients, false, &GroupBy::Model) {
+            CacheResult::Fresh(data) => {
+                assert_eq!(data.daily[0].source_breakdown.len(), 2);
+                let cursor = data.daily[0].source_breakdown.get("cursor").unwrap();
+                let model = cursor.models.get("claude-sonnet-4-5").unwrap();
+                assert_eq!(model.provider, "anthropic");
+                assert_eq!(model.tokens.total(), 30);
+            }
+            other => panic!(
+                "expected fresh current-schema cache, got {:?}",
+                other_variant_name(&other)
+            ),
+        }
+
+        match previous_home {
+            Some(home) => unsafe { env::set_var("HOME", home) },
+            None => unsafe { env::remove_var("HOME") },
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_load_cache_stale_legacy_hourly_models_without_display_fields() {
+        let temp_dir = TempDir::new().unwrap();
+        let previous_home = env::var_os("HOME");
+        unsafe {
+            env::set_var("HOME", temp_dir.path());
+        }
+
+        let cache_path = cache_file().unwrap();
+        fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
+        fs::write(
+            &cache_path,
+            r#"{
+  "schemaVersion": 5,
+  "timestamp": 9999999999999,
+  "enabledClients": ["claude"],
+  "includeSynthetic": false,
+  "groupBy": "model",
+  "data": {
+    "models": [],
+    "agents": [],
+    "daily": [],
+    "hourly": [{
+      "datetime": "2026-03-18 10:00:00",
+      "tokens": {
+        "input": 10,
+        "output": 5,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "reasoning": 0
+      },
+      "cost": 1.25,
+      "clients": ["claude"],
+      "models": [[
+        "claude-sonnet-4-5",
+        {
+          "tokens": {
+            "input": 10,
+            "output": 5,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "reasoning": 0
+          },
+          "cost": 1.25
+        }
+      ]],
+      "messageCount": 1,
+      "turnCount": 1
+    }],
+    "graph": null,
+    "totalTokens": 15,
+    "totalCost": 1.25,
+    "currentStreak": 1,
+    "longestStreak": 1
+  }
+}"#,
+        )
+        .unwrap();
+
+        let clients = make_clients(&[ClientId::Claude]);
+        match load_cache(&clients, false, &GroupBy::Model) {
+            CacheResult::Fresh(data) | CacheResult::Stale(data) => {
+                let hourly_model = data.hourly[0].models.get("claude-sonnet-4-5").unwrap();
+                assert_eq!(hourly_model.display_name, "claude-sonnet-4-5");
+                assert_eq!(hourly_model.color_key, "claude-sonnet-4-5");
+            }
+            other => panic!("expected cache data, got {:?}", other_variant_name(&other)),
+        }
+
+        match previous_home {
+            Some(home) => unsafe { env::set_var("HOME", home) },
+            None => unsafe { env::remove_var("HOME") },
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_load_cache_legacy_empty_client_falls_back_to_unknown() {
+        let temp_dir = TempDir::new().unwrap();
+        let previous_home = env::var_os("HOME");
+        unsafe {
+            env::set_var("HOME", temp_dir.path());
+        }
+
+        let cache_path = cache_file().unwrap();
+        fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
+        fs::write(
+            &cache_path,
+            r#"{
+  "schemaVersion": 3,
+  "timestamp": 9999999999999,
+  "enabledClients": ["claude"],
+  "includeSynthetic": false,
+  "groupBy": "model",
+  "data": {
+    "models": [],
+    "agents": [],
+    "daily": [{
+      "date": "2026-03-18",
+      "tokens": {
+        "input": 10,
+        "output": 5,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "reasoning": 0
+      },
+      "cost": 1.25,
+      "models": [[
+        "claude-sonnet-4-5",
+        {
+          "client": "",
+          "tokens": {
+            "input": 10,
+            "output": 5,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "reasoning": 0
+          },
+          "cost": 1.25
+        }
+      ]]
+    }],
+    "graph": null,
+    "totalTokens": 15,
+    "totalCost": 1.25,
+    "currentStreak": 1,
+    "longestStreak": 1
+  }
+}"#,
+        )
+        .unwrap();
+
+        let clients = make_clients(&[ClientId::Claude]);
+        match load_cache(&clients, false, &GroupBy::Model) {
+            CacheResult::Stale(data) => {
+                assert!(
+                    data.daily[0].source_breakdown.contains_key("unknown"),
+                    "empty client should fall back to 'unknown'"
+                );
+                let unknown = data.daily[0].source_breakdown.get("unknown").unwrap();
+                assert_eq!(unknown.models.len(), 1);
+                let model = unknown.models.get("claude-sonnet-4-5").unwrap();
+                assert_eq!(model.tokens.total(), 15);
+            }
+            other => panic!(
+                "expected stale legacy cache, got {:?}",
+                other_variant_name(&other)
+            ),
+        }
+
+        match previous_home {
+            Some(home) => unsafe { env::set_var("HOME", home) },
+            None => unsafe { env::remove_var("HOME") },
+        }
+    }
+
+    fn other_variant_name(result: &CacheResult) -> &'static str {
+        match result {
+            CacheResult::Fresh(_) => "Fresh",
+            CacheResult::Stale(_) => "Stale",
+            CacheResult::Miss => "Miss",
         }
     }
 }

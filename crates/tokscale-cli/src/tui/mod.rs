@@ -1,9 +1,11 @@
 mod app;
 mod cache;
 pub mod client_ui;
+mod colors;
 pub mod config;
 pub mod data;
 mod event;
+mod export;
 pub mod settings;
 mod themes;
 mod ui;
@@ -81,11 +83,13 @@ pub fn run(
     }
 
     // Single file read: load cache and check freshness in one pass
-    let (cached_data, cache_is_stale) = match load_cache(&enabled_clients, include_synthetic) {
-        CacheResult::Fresh(data) => (Some(data), false),
-        CacheResult::Stale(data) => (Some(data), true),
-        CacheResult::Miss => (None, true),
-    };
+    let initial_group_by = tokscale_core::GroupBy::Model;
+    let (cached_data, cache_is_stale) =
+        match load_cache(&enabled_clients, include_synthetic, &initial_group_by) {
+            CacheResult::Fresh(data) => (Some(data), false),
+            CacheResult::Stale(data) => (Some(data), true),
+            CacheResult::Miss => (None, true),
+        };
     let has_cached_data = cached_data.is_some();
 
     let original_hook = panic::take_hook();
@@ -140,7 +144,12 @@ pub fn run(
             let result = loader.load(&bg_clients, &bg_group_by, bg_include_synthetic);
 
             if let Ok(ref data) = result {
-                save_cached_data(data, &bg_enabled_clients, bg_include_synthetic);
+                save_cached_data(
+                    data,
+                    &bg_enabled_clients,
+                    bg_include_synthetic,
+                    &bg_group_by,
+                );
             }
 
             let _ = tx.send(result);
@@ -249,7 +258,7 @@ fn run_loop_with_background(
                 let loader = DataLoader::with_filters(None, since, until, year);
                 let result = loader.load(&clients, &group_by, include_synthetic);
                 if let Ok(ref data) = result {
-                    save_cached_data(data, &enabled_clients, include_synthetic);
+                    save_cached_data(data, &enabled_clients, include_synthetic, &group_by);
                 }
                 let _ = tx.send(result);
             });
@@ -297,6 +306,10 @@ pub fn test_data_loading() -> Result<()> {
         ClientId::Qwen,
         ClientId::RooCode,
         ClientId::KiloCode,
+        ClientId::Kilo,
+        ClientId::Mux,
+        ClientId::Crush,
+        ClientId::Hermes,
     ];
 
     let data = loader.load(&all_clients, &tokscale_core::GroupBy::default(), false)?;

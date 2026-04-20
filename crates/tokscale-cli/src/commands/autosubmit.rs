@@ -5,13 +5,13 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Duration, Local, Utc};
 use clap::Subcommand;
 use serde::{Deserialize, Serialize};
 
 use crate::tui::settings::Settings;
-use crate::{SUBMIT_MACHINE_ERROR_PREFIX, SubmitCommandArgs, SubmitFilterArgs};
+use crate::{SubmitCommandArgs, SubmitFilterArgs, SUBMIT_MACHINE_ERROR_PREFIX};
 
 const AUTOSUBMIT_CRON_MARKER: &str = "# tokscale-autosubmit";
 const AUTOSUBMIT_TASK_NAME: &str = "tokscale-autosubmit";
@@ -349,9 +349,9 @@ fn additional_orphan_schedulers(
 }
 
 fn invalid_autosubmit_reason(settings: &Settings) -> Option<String> {
-    settings.invalid_autosubmit_error().map(|err| {
-        format!("Saved autosubmit config is invalid: {err}")
-    })
+    settings
+        .invalid_autosubmit_error()
+        .map(|err| format!("Saved autosubmit config is invalid: {err}"))
 }
 
 fn format_combined_reasons(reasons: Vec<String>) -> Option<String> {
@@ -453,6 +453,7 @@ fn output_mentions_any(output: &Output, needles: &[&str]) -> bool {
     needles.iter().any(|needle| combined.contains(needle))
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn xml_escape(value: &str) -> String {
     value
         .replace('&', "&amp;")
@@ -477,6 +478,7 @@ fn scheduler_shell_command(executable: &std::path::Path, log_path: &std::path::P
     )
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn launchd_agents_dir() -> Result<PathBuf> {
     let dir = dirs::home_dir()
         .ok_or_else(|| anyhow!("Could not determine home directory"))?
@@ -487,6 +489,7 @@ fn launchd_agents_dir() -> Result<PathBuf> {
     Ok(dir)
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn launchd_plist_path(identifier: &str) -> Result<PathBuf> {
     Ok(launchd_agents_dir()?.join(format!("{identifier}.plist")))
 }
@@ -522,6 +525,7 @@ fn systemd_timer_path(identifier: &str) -> Result<PathBuf> {
     Ok(systemd_user_dir()?.join(systemd_timer_unit(identifier)))
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn render_launchd_plist(config: &AutosubmitConfig, executable: &std::path::Path) -> Result<String> {
     let log_path = autosubmit_log_path()?;
     let interval_seconds = config.scheduler.heartbeat_minutes.saturating_mul(60);
@@ -1132,14 +1136,21 @@ pub fn run_autosubmit_status() -> Result<()> {
                 probe
                     .reason(&config)
                     .into_iter()
-                    .chain((!extra_orphans.is_empty()).then(|| orphan_scheduler_reason(&extra_orphans)))
+                    .chain(
+                        (!extra_orphans.is_empty())
+                            .then(|| orphan_scheduler_reason(&extra_orphans)),
+                    )
                     .chain(
                         (!orphaned.errors.is_empty())
                             .then(|| orphan_scheduler_probe_error_reason(&orphaned.errors)),
                     )
                     .collect(),
             );
-            let overall_status = if reasons.is_none() { "enabled" } else { "degraded" };
+            let overall_status = if reasons.is_none() {
+                "enabled"
+            } else {
+                "degraded"
+            };
 
             println!("\n  Autosubmit status: {overall_status}");
             println!("  Interval: {}", config.interval.raw);
@@ -1177,7 +1188,10 @@ pub fn run_autosubmit_status() -> Result<()> {
                 if orphaned.installed.len() == 1 {
                     println!("  Scheduler: {}", orphaned.installed[0].scheduler.kind);
                     println!("  Scheduler status: installed");
-                    println!("  Scheduler ID: {}", orphaned.installed[0].scheduler.identifier);
+                    println!(
+                        "  Scheduler ID: {}",
+                        orphaned.installed[0].scheduler.identifier
+                    );
                 } else if !orphaned.errors.is_empty() {
                     println!("  Scheduler status: error");
                 } else {
@@ -2227,10 +2241,8 @@ mod tests {
         assert!(cleaned.contains("MAILTO=user@example.com"));
         assert!(cleaned.contains("/usr/bin/backup autosubmit run >> /tmp/backup.log 2>&1"));
         assert!(!cleaned.contains("# tokscale-autosubmit tokscale-autosubmit"));
-        assert!(
-            !cleaned
-                .contains("'/usr/local/bin/tokscale' autosubmit run >> '/tmp/tokscale.log' 2>&1")
-        );
+        assert!(!cleaned
+            .contains("'/usr/local/bin/tokscale' autosubmit run >> '/tmp/tokscale.log' 2>&1"));
     }
 
     #[test]
@@ -2462,12 +2474,10 @@ mod tests {
 
         let disable_result = run_autosubmit_disable();
         assert!(disable_result.is_err());
-        assert!(
-            disable_result
-                .unwrap_err()
-                .to_string()
-                .contains("Autosubmit is already running")
-        );
+        assert!(disable_result
+            .unwrap_err()
+            .to_string()
+            .contains("Autosubmit is already running"));
 
         release_submitter.wait();
         assert!(run_handle.join().unwrap().is_err());
