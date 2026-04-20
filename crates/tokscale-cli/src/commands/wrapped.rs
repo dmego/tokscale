@@ -217,10 +217,12 @@ async fn load_wrapped_data(options: &WrappedOptions) -> Result<WrappedData> {
         Some(
             parse_local_clients(LocalParseOptions {
                 home_dir: None,
+                use_env_roots: true,
                 clients: Some(local_clients),
                 since: Some(since.clone()),
                 until: Some(until.clone()),
                 year: Some(year.clone()),
+                scanner_settings: crate::tui::settings::load_scanner_settings(),
             })
             .map_err(anyhow::Error::msg)?,
         )
@@ -230,11 +232,13 @@ async fn load_wrapped_data(options: &WrappedOptions) -> Result<WrappedData> {
 
     let graph = generate_graph(ReportOptions {
         home_dir: None,
+        use_env_roots: true,
         clients: Some(graph_clients),
         since: Some(since),
         until: Some(until),
         year: Some(year.clone()),
         group_by: GroupBy::default(),
+        scanner_settings: crate::tui::settings::load_scanner_settings(),
     })
     .await
     .map_err(anyhow::Error::msg)?;
@@ -387,7 +391,7 @@ fn build_top_agents(parsed: &tokscale_core::ParsedMessages) -> Vec<WrappedAgentE
             .position(|name| *name == agent.name)
             .unwrap_or(usize::MAX)
     });
-    unpinned.sort_by(|a, b| b.messages.cmp(&a.messages));
+    unpinned.sort_by_key(|b| std::cmp::Reverse(b.messages));
 
     let mut combined = Vec::new();
     combined.extend(pinned);
@@ -1350,17 +1354,21 @@ fn client_display_name(client: &str) -> Option<&'static str> {
         "opencode" => Some("OpenCode"),
         "claude" => Some("Claude Code"),
         "codex" => Some("Codex CLI"),
+        "copilot" => Some("Copilot CLI"),
         "gemini" => Some("Gemini CLI"),
         s if s == ClientId::Cursor.as_str() => Some("Cursor IDE"),
         "amp" => Some("Amp"),
         "droid" => Some("Droid"),
         "openclaw" => Some("OpenClaw"),
+        "hermes" => Some("Hermes Agent"),
         "pi" => Some("Pi"),
         "kimi" => Some("Kimi CLI"),
         "qwen" => Some("Qwen CLI"),
         "roocode" => Some("Roo Code"),
         "kilocode" => Some("Kilo"),
+        "kilo" => Some("Kilo CLI"),
         "mux" => Some("Mux"),
+        "crush" => Some("Crush"),
         "synthetic" => Some("Synthetic"),
         _ => None,
     }
@@ -1371,17 +1379,25 @@ fn client_logo_url(client_name: &str) -> Option<&'static str> {
         "OpenCode" => Some("https://tokscale.ai/assets/logos/opencode.png"),
         "Claude Code" => Some("https://tokscale.ai/assets/logos/claude.jpg"),
         "Codex CLI" => Some("https://tokscale.ai/assets/logos/openai.jpg"),
+        "Copilot CLI" => Some(
+            "https://raw.githubusercontent.com/junhoyeo/tokscale/main/.github/assets/client-copilot.jpg",
+        ),
         "Gemini CLI" => Some("https://tokscale.ai/assets/logos/gemini.png"),
         "Cursor IDE" => Some("https://tokscale.ai/assets/logos/cursor.jpg"),
         "Amp" => Some("https://tokscale.ai/assets/logos/amp.png"),
         "Droid" => Some("https://tokscale.ai/assets/logos/droid.png"),
         "OpenClaw" => Some("https://tokscale.ai/assets/logos/openclaw.png"),
+        "Hermes Agent" => Some("https://tokscale.ai/assets/logos/hermes.png"),
         "Pi" => Some("https://tokscale.ai/assets/logos/pi.png"),
         "Kimi CLI" => Some("https://tokscale.ai/assets/logos/kimi.png"),
         "Qwen CLI" => Some("https://tokscale.ai/assets/logos/qwen.png"),
         "Roo Code" => Some("https://tokscale.ai/assets/logos/roocode.png"),
         "Kilo" => Some("https://tokscale.ai/assets/logos/kilocode.png"),
+        "Kilo CLI" => Some("https://tokscale.ai/assets/logos/kilocode.png"),
         "Mux" => Some("https://tokscale.ai/assets/logos/mux.png"),
+        "Crush" => Some(
+            "https://raw.githubusercontent.com/junhoyeo/tokscale/6b483d0f2de3717266dec8faed13acd067f90ff3/.github/assets/client-crush.png",
+        ),
         "Synthetic" => Some("https://tokscale.ai/assets/logos/synthetic.png"),
         _ => None,
     }
@@ -1719,11 +1735,13 @@ fn default_clients() -> Vec<String> {
         "opencode".to_string(),
         "claude".to_string(),
         "codex".to_string(),
+        "copilot".to_string(),
         "gemini".to_string(),
         ClientId::Cursor.as_str().to_string(),
         "amp".to_string(),
         "droid".to_string(),
         "openclaw".to_string(),
+        "hermes".to_string(),
         "pi".to_string(),
     ]
 }
@@ -2154,6 +2172,11 @@ mod tests {
     }
 
     #[test]
+    fn test_client_display_name_copilot() {
+        assert_eq!(client_display_name("copilot"), Some("Copilot CLI"));
+    }
+
+    #[test]
     fn test_client_display_name_gemini() {
         assert_eq!(client_display_name("gemini"), Some("Gemini CLI"));
     }
@@ -2179,8 +2202,23 @@ mod tests {
     }
 
     #[test]
+    fn test_client_display_name_hermes() {
+        assert_eq!(client_display_name("hermes"), Some("Hermes Agent"));
+    }
+
+    #[test]
     fn test_client_display_name_pi() {
         assert_eq!(client_display_name("pi"), Some("Pi"));
+    }
+
+    #[test]
+    fn test_client_display_name_kilo() {
+        assert_eq!(client_display_name("kilo"), Some("Kilo CLI"));
+    }
+
+    #[test]
+    fn test_client_display_name_crush() {
+        assert_eq!(client_display_name("crush"), Some("Crush"));
     }
 
     #[test]
@@ -2188,6 +2226,18 @@ mod tests {
         assert_eq!(client_display_name("unknown"), None);
         assert_eq!(client_display_name(""), None);
         assert_eq!(client_display_name("Claude"), None); // case-sensitive
+    }
+
+    #[test]
+    fn test_default_clients_includes_hermes() {
+        let clients = default_clients();
+        assert!(clients.iter().any(|client| client == "hermes"));
+    }
+
+    #[test]
+    fn test_default_clients_includes_copilot() {
+        let clients = default_clients();
+        assert!(clients.iter().any(|client| client == "copilot"));
     }
 
     // ========== client_logo_url tests ==========
@@ -2213,6 +2263,16 @@ mod tests {
         assert_eq!(
             client_logo_url("Codex CLI"),
             Some("https://tokscale.ai/assets/logos/openai.jpg")
+        );
+    }
+
+    #[test]
+    fn test_client_logo_url_copilot_cli() {
+        assert_eq!(
+            client_logo_url("Copilot CLI"),
+            Some(
+                "https://raw.githubusercontent.com/junhoyeo/tokscale/main/.github/assets/client-copilot.jpg",
+            )
         );
     }
 
@@ -2257,10 +2317,36 @@ mod tests {
     }
 
     #[test]
+    fn test_client_logo_url_hermes() {
+        assert_eq!(
+            client_logo_url("Hermes Agent"),
+            Some("https://tokscale.ai/assets/logos/hermes.png")
+        );
+    }
+
+    #[test]
     fn test_client_logo_url_pi() {
         assert_eq!(
             client_logo_url("Pi"),
             Some("https://tokscale.ai/assets/logos/pi.png")
+        );
+    }
+
+    #[test]
+    fn test_client_logo_url_kilo_cli() {
+        assert_eq!(
+            client_logo_url("Kilo CLI"),
+            Some("https://tokscale.ai/assets/logos/kilocode.png")
+        );
+    }
+
+    #[test]
+    fn test_client_logo_url_crush() {
+        assert_eq!(
+            client_logo_url("Crush"),
+            Some(
+                "https://raw.githubusercontent.com/junhoyeo/tokscale/6b483d0f2de3717266dec8faed13acd067f90ff3/.github/assets/client-crush.png"
+            )
         );
     }
 

@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useMemo, memo, useCallback } from "react";
 import { useRouter } from "nextjs-toploader/app";
 import styled from "styled-components";
-import { CopyIcon, CheckIcon } from "@/components/ui/Icons";
+import { CopyIcon, CheckIcon, SearchIcon, XIcon } from "@/components/ui/Icons";
 import { TabBar } from "@/components/TabBar";
 import { LeaderboardSkeleton } from "@/components/Skeleton";
 import { formatCurrency, formatNumber } from "@/lib/utils";
@@ -625,20 +625,94 @@ const ErrorBanner = styled.div`
   gap: 8px;
 `;
 
-const SortToggleContainer = styled.div`
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 12px;
-  margin-bottom: 16px;
-`;
-
 const SortLabel = styled.span`
   font-size: 12px;
   color: var(--color-fg-muted);
   font-weight: 500;
 `;
 
+const SearchSortRow = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+
+  @media (max-width: 560px) {
+    flex-direction: column;
+    align-items: stretch;
+  }
+`;
+
+const SearchInputWrapper = styled.div`
+  position: relative;
+  flex: 1;
+  max-width: 320px;
+
+  @media (max-width: 560px) {
+    max-width: none;
+  }
+`;
+
+const SearchInputIcon = styled.span`
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--color-fg-muted);
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+`;
+
+const SearchInput = styled.input`
+  width: 100%;
+  padding: 8px 36px 8px 36px;
+  border-radius: 8px;
+  border: 1px solid var(--color-border-default);
+  background-color: var(--color-bg-subtle);
+  color: var(--color-fg-default);
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.15s ease;
+
+  &::placeholder {
+    color: var(--color-fg-muted);
+  }
+
+  &:focus {
+    border-color: #0073FF;
+    box-shadow: 0 0 0 3px rgba(0, 115, 255, 0.15);
+  }
+`;
+
+const ClearSearchButton = styled.button`
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border: none;
+  background: transparent;
+  color: var(--color-fg-muted);
+  cursor: pointer;
+  border-radius: 4px;
+  transition: color 0.15s ease;
+
+  &:hover {
+    color: var(--color-fg-default);
+  }
+`;
+
+const SortToggleInner = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+`;
 
 const HoverTooltip = styled.span`
   position: relative;
@@ -850,29 +924,54 @@ const LeaderboardRow = memo(function LeaderboardRow({
 export default function LeaderboardClient({ initialData, currentUser, initialSortBy, initialUserRank }: LeaderboardClientProps) {
   const router = useRouter();
   const [data, setData] = useState<LeaderboardData>(initialData);
-  const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copiedCommand, setCopiedCommand] = useState<string | null>(null);
   const [period, setPeriod] = useState<Period>(initialData.period);
   const [page, setPage] = useState(initialData.pagination.page);
   const [currentUserRank, setCurrentUserRank] = useState<LeaderboardUser | null>(initialUserRank);
   const [currentUserRankError, setCurrentUserRankError] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [retryToken, setRetryToken] = useState(0);
+  const [resolvedRequest, setResolvedRequest] = useState({
+    period: initialData.period,
+    page: initialData.pagination.page,
+    sortBy: initialSortBy,
+    search: "",
+    retryToken: 0,
+  });
 
   const { leaderboardSortBy, setLeaderboardSort, mounted } = useSettings();
-  
-  const effectiveSortBy = mounted ? leaderboardSortBy : initialSortBy;
 
-  const isFirstMount = useRef(true);
-  const prevPeriodRef = useRef<Period>(initialData.period);
-  const prevPageRef = useRef(initialData.pagination.page);
-  const prevSortByRef = useRef(initialSortBy);
+  const effectiveSortBy = mounted ? leaderboardSortBy : initialSortBy;
+  const requestedPage = data.pagination.totalPages > 0
+    ? Math.min(page, data.pagination.totalPages)
+    : page;
+  const isLoading =
+    period !== resolvedRequest.period
+    || requestedPage !== resolvedRequest.page
+    || effectiveSortBy !== resolvedRequest.sortBy
+    || debouncedSearch !== resolvedRequest.search
+    || retryToken !== resolvedRequest.retryToken;
 
   const isFirstRankFetch = useRef(true);
 
+  // Debounce search input — skip setPage(1) on initial mount with empty query
+  const isSearchMounted = useRef(false);
+  useEffect(() => {
+    if (!isSearchMounted.current) {
+      isSearchMounted.current = true;
+      if (!searchQuery) return;
+    }
+    const timer = setTimeout(() => {
+      setDebouncedSearch(searchQuery);
+      setPage(1);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
   useEffect(() => {
     if (!currentUser) {
-      setCurrentUserRank(null);
-      setCurrentUserRankError(false);
       return;
     }
 
@@ -882,7 +981,6 @@ export default function LeaderboardClient({ initialData, currentUser, initialSor
     }
 
     const abortController = new AbortController();
-    setCurrentUserRankError(false);
 
     fetch(`/api/leaderboard/user/${currentUser.username}?period=${period}&sortBy=${effectiveSortBy}`, {
       signal: abortController.signal,
@@ -905,10 +1003,16 @@ export default function LeaderboardClient({ initialData, currentUser, initialSor
     return () => abortController.abort();
   }, [currentUser, period, effectiveSortBy]);
 
-  const fetchData = (targetPeriod: Period, targetPage: number, targetSortBy: 'tokens' | 'cost', signal?: AbortSignal) => {
-    setIsLoading(true);
-    setError(null);
-    fetch(`/api/leaderboard?period=${targetPeriod}&page=${targetPage}&limit=50&sortBy=${targetSortBy}`, { signal })
+  const fetchData = useCallback((
+    targetPeriod: Period,
+    targetPage: number,
+    targetSortBy: "tokens" | "cost",
+    targetSearch: string,
+    targetRetryToken: number,
+    signal?: AbortSignal,
+  ) => {
+    const searchParam = targetSearch ? `&search=${encodeURIComponent(targetSearch)}` : "";
+    fetch(`/api/leaderboard?period=${targetPeriod}&page=${targetPage}&limit=50&sortBy=${targetSortBy}${searchParam}`, { signal })
       .then((res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return res.json();
@@ -918,45 +1022,38 @@ export default function LeaderboardClient({ initialData, currentUser, initialSor
           throw new Error("Invalid response format");
         }
         setData(result);
-        setIsLoading(false);
+        setError(null);
+        setResolvedRequest({
+          period: targetPeriod,
+          page: result.pagination.page,
+          sortBy: targetSortBy,
+          search: targetSearch,
+          retryToken: targetRetryToken,
+        });
       })
       .catch((err) => {
         if (err.name !== "AbortError") {
           setError(err.message || "Failed to load");
-          setIsLoading(false);
+          setResolvedRequest({
+            period: targetPeriod,
+            page: targetPage,
+            sortBy: targetSortBy,
+            search: targetSearch,
+            retryToken: targetRetryToken,
+          });
         }
       });
-  };
+  }, []);
 
   useEffect(() => {
-    if (isFirstMount.current) {
-      isFirstMount.current = false;
-      prevSortByRef.current = effectiveSortBy;
+    if (!isLoading) {
       return;
     }
-
-    const periodChanged = period !== prevPeriodRef.current;
-    const pageChanged = page !== prevPageRef.current;
-    const sortByChanged = effectiveSortBy !== prevSortByRef.current;
-
-    if (!periodChanged && !pageChanged && !sortByChanged) {
-      return;
-    }
-
-    prevPeriodRef.current = period;
-    prevPageRef.current = page;
-    prevSortByRef.current = effectiveSortBy;
 
     const abortController = new AbortController();
-    fetchData(period, page, effectiveSortBy, abortController.signal);
+    fetchData(period, requestedPage, effectiveSortBy, debouncedSearch, retryToken, abortController.signal);
     return () => abortController.abort();
-  }, [period, page, effectiveSortBy]);
-
-  useEffect(() => {
-    if (data.pagination.totalPages > 0 && page > data.pagination.totalPages) {
-      setPage(data.pagination.totalPages);
-    }
-  }, [data.pagination.totalPages, page]);
+  }, [debouncedSearch, effectiveSortBy, fetchData, isLoading, period, requestedPage, retryToken]);
 
   const sortedUsers = data.users || [];
   const showSubmissionCount = period === "all";
@@ -1063,19 +1160,43 @@ export default function LeaderboardClient({ initialData, currentUser, initialSor
           onTabChange={(tab) => {
             setPeriod(tab);
             setPage(1);
+            if (tab !== "all") {
+              setSearchQuery("");
+              setDebouncedSearch("");
+            }
           }}
         />
       </TabSection>
 
-      <SortToggleContainer>
-        <SortLabel>Sort by:</SortLabel>
-        <Switch
-          checked={effectiveSortBy === 'cost'}
-          onChange={(checked) => setLeaderboardSort(checked ? 'cost' : 'tokens')}
-          leftLabel="Tokens"
-          rightLabel="Cost"
-        />
-      </SortToggleContainer>
+      <SearchSortRow>
+        {period === "all" && (
+          <SearchInputWrapper>
+            <SearchInputIcon>
+              <SearchIcon size={16} />
+            </SearchInputIcon>
+            <SearchInput
+              type="text"
+              placeholder="Search users..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+            {searchQuery && (
+              <ClearSearchButton onClick={() => setSearchQuery("")} aria-label="Clear search">
+                <XIcon size={16} />
+              </ClearSearchButton>
+            )}
+          </SearchInputWrapper>
+        )}
+        <SortToggleInner>
+          <SortLabel>Sort by:</SortLabel>
+          <Switch
+            checked={effectiveSortBy === 'cost'}
+            onChange={(checked) => setLeaderboardSort(checked ? 'cost' : 'tokens')}
+            leftLabel="Tokens"
+            rightLabel="Cost"
+          />
+        </SortToggleInner>
+      </SearchSortRow>
 
       {isLoading ? (
         <LeaderboardSkeleton />
@@ -1084,7 +1205,7 @@ export default function LeaderboardClient({ initialData, currentUser, initialSor
           <EmptyState>
             <EmptyMessage>Failed to load leaderboard</EmptyMessage>
             <EmptyHint>{error}</EmptyHint>
-            <RetryButton onClick={() => fetchData(period, page, effectiveSortBy)}>
+            <RetryButton onClick={() => setRetryToken((prev) => prev + 1)}>
               Retry
             </RetryButton>
           </EmptyState>
@@ -1093,10 +1214,19 @@ export default function LeaderboardClient({ initialData, currentUser, initialSor
         <TableContainer>
           {data.users.length === 0 ? (
             <EmptyState>
-              <EmptyMessage>No submissions yet. Be the first!</EmptyMessage>
-              <EmptyHint>
-                Run <CodeSnippet>tokscale login && tokscale submit</CodeSnippet>
-              </EmptyHint>
+              {debouncedSearch ? (
+                <>
+                  <EmptyMessage>No users found for &ldquo;{debouncedSearch}&rdquo;</EmptyMessage>
+                  <EmptyHint>Try a different search term</EmptyHint>
+                </>
+              ) : (
+                <>
+                  <EmptyMessage>No submissions yet. Be the first!</EmptyMessage>
+                  <EmptyHint>
+                    Run <CodeSnippet>tokscale login && tokscale submit</CodeSnippet>
+                  </EmptyHint>
+                </>
+              )}
             </EmptyState>
           ) : (
             <>
