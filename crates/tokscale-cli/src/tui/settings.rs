@@ -247,7 +247,7 @@ impl Settings {
 }
 
 #[cfg(test)]
-mod scanner_tests {
+mod settings_tests {
     use super::*;
     use serial_test::serial;
     use std::ffi::OsString;

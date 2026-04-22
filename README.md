@@ -464,8 +464,7 @@ tokscale autosubmit disable
 - `autosubmit status` shows both saved config state and live scheduler state, including `degraded` when they diverge
 - Tokscale uses `launchd` on macOS, prefers `systemd --user` on Linux with `cron` as the fallback, and uses Task Scheduler on Windows
 
-`--no-spinner` remains a top-level CLI flag. Use `tokscale --no-spinner
-autosubmit status`, not `tokscale autosubmit status --no-spinner`.
+`--no-spinner` remains a top-level CLI flag. Use `tokscale --no-spinner autosubmit status`, not `tokscale autosubmit status --no-spinner`.
 
 ### Cursor IDE Commands
 

@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 
 use anyhow::{anyhow, bail, Context, Result};
-use chrono::{DateTime, Duration, Local, Utc};
+use chrono::{DateTime, Duration, Local, Timelike, Utc};
 use clap::Subcommand;
 use serde::{Deserialize, Serialize};
 
@@ -1560,7 +1560,7 @@ fn probe_systemd_user_scheduler(_identifier: &str) -> SchedulerProbeResult {
 }
 
 fn install_cron_scheduler(config: &AutosubmitConfig, executable: &std::path::Path) -> Result<()> {
-    let minute = (config.created_at.timestamp() % 60 + 60) % 60;
+    let minute = cron_minute_of_hour(config.created_at);
     let schedule = format!("{} * * * *", minute);
     let log_path = autosubmit_log_path()?;
     let command = scheduler_shell_command(executable, &log_path);
@@ -1580,6 +1580,10 @@ fn install_cron_scheduler(config: &AutosubmitConfig, executable: &std::path::Pat
     }
     merged.push_str(&block);
     write_crontab(&merged)
+}
+
+fn cron_minute_of_hour(created_at: DateTime<Utc>) -> u32 {
+    created_at.with_timezone(&Local).minute()
 }
 
 fn uninstall_cron_scheduler(identifier: &str) -> Result<()> {
@@ -2179,6 +2183,18 @@ mod tests {
         assert_eq!(
             probe_cron_scheduler_content(&valid, "tokscale-autosubmit"),
             SchedulerProbeResult::Installed
+        );
+    }
+
+    #[test]
+    fn cron_scheduler_uses_local_minute_of_hour() {
+        let created_at = DateTime::parse_from_rfc3339("2026-04-20T12:34:56Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        assert_eq!(
+            cron_minute_of_hour(created_at),
+            created_at.with_timezone(&Local).minute()
         );
     }
 
