@@ -659,7 +659,8 @@ fn parse_all_messages_with_pricing_with_env_strategy(
     let include_all = clients.is_empty();
     let include_synthetic = include_all || clients.iter().any(|c| c == "synthetic");
 
-    // Parse OpenCode: read both SQLite (1.2+) and legacy JSON, deduplicate by message ID
+    // Parse OpenCode: prefer SQLite, collapse forked SQLite history there, then
+    // suppress legacy JSON overlap by message identity.
     let mut opencode_seen: HashSet<String> = HashSet::new();
 
     for db_path in &scan_result.opencode_dbs {
@@ -1474,22 +1475,11 @@ fn apply_pricing_if_available(
         return;
     };
 
-    let calculated_cost = if message.client.eq_ignore_ascii_case("gemini") {
-        let usage = TokenBreakdown {
-            input: message.tokens.input,
-            output: message.tokens.output + message.tokens.reasoning,
-            cache_read: 0,
-            cache_write: 0,
-            reasoning: 0,
-        };
-        pricing.calculate_cost_with_provider(&message.model_id, Some(&message.provider_id), &usage)
-    } else {
-        pricing.calculate_cost_with_provider(
-            &message.model_id,
-            Some(&message.provider_id),
-            &message.tokens,
-        )
-    };
+    let calculated_cost = pricing.calculate_cost_with_provider(
+        &message.model_id,
+        Some(&message.provider_id),
+        &message.tokens,
+    );
 
     if calculated_cost > 0.0 {
         message.cost = calculated_cost;
@@ -1580,7 +1570,8 @@ pub fn parse_local_clients(options: LocalParseOptions) -> Result<ParsedMessages,
 
     let mut messages: Vec<ParsedMessage> = Vec::new();
 
-    // Parse OpenCode: read both SQLite (1.2+) and legacy JSON, deduplicate by message ID
+    // Parse OpenCode: prefer SQLite, collapse forked SQLite history there, then
+    // suppress legacy JSON overlap by message identity.
     let mut counts = ClientCounts::new();
 
     let opencode_count: i32 = {
@@ -2041,6 +2032,47 @@ mod tests {
             workspace_label.map(str::to_string),
         );
         msg
+    }
+
+    fn build_opencode_sqlite_payload(
+        created_ms: f64,
+        completed_ms: f64,
+        input: i64,
+        output: i64,
+        reasoning: i64,
+        cache_read: i64,
+        cache_write: i64,
+        cost: f64,
+    ) -> String {
+        format!(
+            r#"{{
+                "role": "assistant",
+                "modelID": "claude-sonnet-4",
+                "providerID": "anthropic",
+                "cost": {cost},
+                "tokens": {{
+                    "input": {input},
+                    "output": {output},
+                    "reasoning": {reasoning},
+                    "cache": {{ "read": {cache_read}, "write": {cache_write} }}
+                }},
+                "time": {{ "created": {created_ms}, "completed": {completed_ms} }},
+                "mode": "build"
+            }}"#
+        )
+    }
+
+    fn create_opencode_sqlite_db(db_path: &std::path::Path) -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open(db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE message (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                data TEXT NOT NULL
+            );",
+        )
+        .unwrap();
+        conn
     }
 
     #[test]
@@ -2713,10 +2745,7 @@ mod tests {
     fn test_parse_all_messages_dedups_across_channel_suffixed_opencode_dbs() {
         // Regression guard: a session that appears in both `opencode.db` and
         // `opencode-<channel>.db` (e.g. the user switches channels mid-session)
-        // must only be counted once. Before the fix,
-        // `parse_all_messages_with_pricing_with_env_strategy` populated the
-        // `opencode_seen` set but never checked it before extending
-        // `all_messages`, so shared message IDs were double-counted.
+        // must only be counted once.
         let cache_home = tempfile::TempDir::new().unwrap();
         let source_home = tempfile::TempDir::new().unwrap();
         let original_home = std::env::var("HOME").ok();
@@ -2745,7 +2774,6 @@ mod tests {
                 )
             };
 
-            // opencode.db: shared message + one unique to this db
             let default_db = db_dir.join("opencode.db");
             let conn = rusqlite::Connection::open(&default_db).unwrap();
             conn.execute_batch(schema).unwrap();
@@ -2769,7 +2797,6 @@ mod tests {
             .unwrap();
             drop(conn);
 
-            // opencode-stable.db: same shared message ID + one unique to this db
             let stable_db = db_dir.join("opencode-stable.db");
             let conn = rusqlite::Connection::open(&stable_db).unwrap();
             conn.execute_batch(schema).unwrap();
@@ -2793,7 +2820,6 @@ mod tests {
             .unwrap();
             drop(conn);
 
-            // Cold cache: parse directly from source files.
             let messages = parse_all_messages_with_pricing(
                 source_home.path().to_str().unwrap(),
                 &["opencode".to_string()],
@@ -2812,9 +2838,6 @@ mod tests {
             ids.sort();
             assert_eq!(ids, vec!["latest-only", "shared-msg", "stable-only"]);
 
-            // Warm cache: second pass goes through `SourceMessageCache`. The
-            // per-db cache entries store un-deduped rows, so cross-db dedup
-            // still has to happen at the aggregation layer on every call.
             let messages_warm = parse_all_messages_with_pricing(
                 source_home.path().to_str().unwrap(),
                 &["opencode".to_string()],
@@ -2825,6 +2848,167 @@ mod tests {
                 3,
                 "warm cache must also dedup shared message across channel dbs"
             );
+        }
+
+        match original_home {
+            Some(home) => std::env::set_var("HOME", home),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_parse_all_messages_with_pricing_opencode_sqlite_deduplicates_forked_history() {
+        let cache_home = tempfile::TempDir::new().unwrap();
+        let source_home = tempfile::TempDir::new().unwrap();
+        let original_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", cache_home.path());
+
+        {
+            let db_dir = source_home.path().join(".local/share/opencode");
+            std::fs::create_dir_all(&db_dir).unwrap();
+            let db_path = db_dir.join("opencode.db");
+            let conn = create_opencode_sqlite_db(&db_path);
+
+            let msg_a = build_opencode_sqlite_payload(
+                1_700_000_000_000.0,
+                1_700_000_000_500.0,
+                100,
+                50,
+                0,
+                10,
+                5,
+                0.01,
+            );
+            let msg_b = build_opencode_sqlite_payload(
+                1_700_000_001_000.0,
+                1_700_000_001_500.0,
+                200,
+                80,
+                10,
+                20,
+                0,
+                0.02,
+            );
+            let msg_c = build_opencode_sqlite_payload(
+                1_700_000_002_000.0,
+                1_700_000_002_500.0,
+                300,
+                120,
+                15,
+                0,
+                0,
+                0.03,
+            );
+
+            for (id, session_id, payload) in [
+                ("root_a", "root", msg_a.as_str()),
+                ("root_b", "root", msg_b.as_str()),
+                ("fork_a_copy", "fork", msg_a.as_str()),
+                ("fork_b_copy", "fork", msg_b.as_str()),
+                ("fork_c_new", "fork", msg_c.as_str()),
+            ] {
+                conn.execute(
+                    "INSERT INTO message (id, session_id, data) VALUES (?1, ?2, ?3)",
+                    rusqlite::params![id, session_id, payload],
+                )
+                .unwrap();
+            }
+            drop(conn);
+
+            let messages = parse_all_messages_with_pricing(
+                source_home.path().to_str().unwrap(),
+                &["opencode".to_string()],
+                None,
+            );
+
+            assert_eq!(messages.len(), 3);
+            assert_eq!(messages.iter().map(|m| m.tokens.input).sum::<i64>(), 600);
+            assert_eq!(messages.iter().map(|m| m.tokens.output).sum::<i64>(), 250);
+            assert_eq!(messages.iter().map(|m| m.cost).sum::<f64>(), 0.06);
+        }
+
+        match original_home {
+            Some(home) => std::env::set_var("HOME", home),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_parse_local_clients_opencode_sqlite_counts_deduplicated_forked_history() {
+        let cache_home = tempfile::TempDir::new().unwrap();
+        let source_home = tempfile::TempDir::new().unwrap();
+        let original_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", cache_home.path());
+
+        {
+            let db_dir = source_home.path().join(".local/share/opencode");
+            std::fs::create_dir_all(&db_dir).unwrap();
+            let db_path = db_dir.join("opencode.db");
+            let conn = create_opencode_sqlite_db(&db_path);
+
+            let msg_a = build_opencode_sqlite_payload(
+                1_700_000_000_000.0,
+                1_700_000_000_500.0,
+                100,
+                50,
+                0,
+                10,
+                5,
+                0.01,
+            );
+            let msg_b = build_opencode_sqlite_payload(
+                1_700_000_001_000.0,
+                1_700_000_001_500.0,
+                200,
+                80,
+                10,
+                20,
+                0,
+                0.02,
+            );
+            let msg_c = build_opencode_sqlite_payload(
+                1_700_000_002_000.0,
+                1_700_000_002_500.0,
+                300,
+                120,
+                15,
+                0,
+                0,
+                0.03,
+            );
+
+            for (id, session_id, payload) in [
+                ("root_a", "root", msg_a.as_str()),
+                ("root_b", "root", msg_b.as_str()),
+                ("fork_a_copy", "fork", msg_a.as_str()),
+                ("fork_b_copy", "fork", msg_b.as_str()),
+                ("fork_c_new", "fork", msg_c.as_str()),
+            ] {
+                conn.execute(
+                    "INSERT INTO message (id, session_id, data) VALUES (?1, ?2, ?3)",
+                    rusqlite::params![id, session_id, payload],
+                )
+                .unwrap();
+            }
+            drop(conn);
+
+            let parsed = parse_local_clients(LocalParseOptions {
+                home_dir: Some(source_home.path().to_str().unwrap().to_string()),
+                use_env_roots: false,
+                clients: Some(vec!["opencode".to_string()]),
+                since: None,
+                until: None,
+                year: None,
+                scanner_settings: scanner::ScannerSettings::default(),
+            })
+            .unwrap();
+
+            assert_eq!(parsed.counts.get(ClientId::OpenCode), 3);
+            assert_eq!(parsed.messages.len(), 3);
+            assert_eq!(parsed.messages.iter().map(|m| m.input).sum::<i64>(), 600);
+            assert_eq!(parsed.messages.iter().map(|m| m.output).sum::<i64>(), 250);
         }
 
         match original_home {
@@ -3213,6 +3397,41 @@ mod tests {
         apply_pricing_if_available(&mut msg, Some(&pricing));
 
         assert_eq!(msg.cost, 0.034);
+    }
+
+    #[test]
+    fn test_apply_pricing_if_available_uses_cache_read_pricing_for_gemini() {
+        let mut litellm = HashMap::new();
+        litellm.insert(
+            "gemini-2.5-pro".into(),
+            pricing::ModelPricing {
+                input_cost_per_token: Some(0.001),
+                output_cost_per_token: Some(0.002),
+                cache_read_input_token_cost: Some(0.0001),
+                ..Default::default()
+            },
+        );
+        let pricing = pricing::PricingService::new(litellm, HashMap::new());
+
+        let mut msg = UnifiedMessage::new(
+            "gemini",
+            "gemini-2.5-pro",
+            "google",
+            "session-1",
+            1_733_011_200_000,
+            TokenBreakdown {
+                input: 10,
+                output: 5,
+                cache_read: 7,
+                cache_write: 0,
+                reasoning: 3,
+            },
+            0.0,
+        );
+
+        apply_pricing_if_available(&mut msg, Some(&pricing));
+
+        assert_eq!(msg.cost, 0.0267);
     }
 
     #[test]
@@ -3784,5 +4003,87 @@ mod tests {
             "no OpenCode messages may leak into a Claude-only result, got {:?}",
             parsed.messages
         );
+    }
+
+    #[test]
+    fn test_parse_local_clients_amp_partial_ledger_recovers_message_fallback_day() {
+        use chrono::TimeZone;
+
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let amp_dir = temp_dir.path().join(".local/share/amp/threads");
+        std::fs::create_dir_all(&amp_dir).unwrap();
+
+        let thread_created = chrono::DateTime::parse_from_rfc3339("2026-04-04T12:00:00Z")
+            .unwrap()
+            .timestamp_millis();
+        let ledger_timestamp = chrono::DateTime::parse_from_rfc3339("2026-04-08T12:00:00Z")
+            .unwrap()
+            .timestamp_millis();
+
+        let thread = format!(
+            r#"{{
+                "id": "thread-amp-gap",
+                "created": {thread_created},
+                "usageLedger": {{
+                    "events": [
+                        {{
+                            "timestamp": "2026-04-08T12:00:00Z",
+                            "model": "claude-sonnet-4-0",
+                            "credits": 0.75,
+                            "tokens": {{ "input": 100, "output": 20 }}
+                        }}
+                    ]
+                }},
+                "messages": [
+                    {{
+                        "role": "assistant",
+                        "messageId": 1,
+                        "usage": {{
+                            "model": "claude-sonnet-4-0",
+                            "inputTokens": 100,
+                            "outputTokens": 20,
+                            "credits": 0.75
+                        }}
+                    }},
+                    {{
+                        "role": "assistant",
+                        "messageId": 2,
+                        "usage": {{
+                            "model": "claude-sonnet-4-0",
+                            "inputTokens": 50,
+                            "outputTokens": 10,
+                            "credits": 0.40
+                        }}
+                    }}
+                ]
+            }}"#
+        );
+        std::fs::write(amp_dir.join("T-thread-amp-gap.json"), thread).unwrap();
+
+        let parsed = parse_local_clients(LocalParseOptions {
+            home_dir: Some(temp_dir.path().to_str().unwrap().to_string()),
+            use_env_roots: false,
+            clients: Some(vec!["amp".to_string()]),
+            since: None,
+            until: None,
+            year: None,
+            scanner_settings: scanner::ScannerSettings::default(),
+        })
+        .unwrap();
+
+        assert_eq!(parsed.counts.get(ClientId::Amp), 2);
+        assert_eq!(parsed.messages.len(), 2);
+
+        let dates: HashSet<String> = parsed.messages.iter().map(|msg| msg.date.clone()).collect();
+        let local_date = |timestamp_ms: i64| {
+            chrono::Local
+                .timestamp_millis_opt(timestamp_ms)
+                .single()
+                .unwrap()
+                .format("%Y-%m-%d")
+                .to_string()
+        };
+        assert!(dates.contains(&local_date(thread_created + 2000)));
+        assert!(dates.contains(&local_date(ledger_timestamp)));
     }
 }
