@@ -11,7 +11,7 @@ use clap::Subcommand;
 use serde::{Deserialize, Serialize};
 
 use crate::tui::settings::Settings;
-use crate::{SubmitCommandArgs, SubmitFilterArgs, SUBMIT_MACHINE_ERROR_PREFIX};
+use crate::{run_submit_with_args_autosubmit, SubmitCommandArgs, SubmitFilterArgs};
 
 const AUTOSUBMIT_CRON_MARKER: &str = "# tokscale-autosubmit";
 const AUTOSUBMIT_TASK_NAME: &str = "tokscale-autosubmit";
@@ -721,101 +721,6 @@ fn autosubmit_finish_line(
     line
 }
 
-fn strip_ansi_codes(input: &str) -> String {
-    let mut result = String::with_capacity(input.len());
-    let mut chars = input.chars().peekable();
-
-    while let Some(ch) = chars.next() {
-        if ch == '\u{1b}' && matches!(chars.peek(), Some('[')) {
-            chars.next();
-            for next in chars.by_ref() {
-                if ('@'..='~').contains(&next) {
-                    break;
-                }
-            }
-            continue;
-        }
-        result.push(ch);
-    }
-
-    result
-}
-
-fn extract_submit_failure_reason(output: &Output) -> String {
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let combined = strip_ansi_codes(&format!("{stderr}\n{stdout}"));
-    let lines = combined
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>();
-
-    if let Some(line) = lines
-        .iter()
-        .rev()
-        .find_map(|line| line.strip_prefix(SUBMIT_MACHINE_ERROR_PREFIX))
-    {
-        return line.trim().to_string();
-    }
-    if let Some(line) = lines.iter().rev().find_map(|line| {
-        line.strip_prefix("Error: ")
-            .or_else(|| line.strip_prefix("Error:"))
-    }) {
-        return line.trim().to_string();
-    }
-    if let Some(line) = lines.iter().rev().find(|line| **line == "Not logged in.") {
-        return (*line).to_string();
-    }
-    lines
-        .last()
-        .map(|line| (*line).to_string())
-        .unwrap_or_else(|| format!("submit exited with status {}", output.status))
-}
-
-fn submit_args_to_cli_args(args: &SubmitCommandArgs) -> Vec<String> {
-    let filters = &args.filters;
-    let mut cli_args = vec!["submit".to_string()];
-
-    for (flag, enabled) in submit_filter_bool_flag_entries(filters) {
-        if enabled {
-            cli_args.push(flag.to_string());
-        }
-    }
-
-    for (flag, value) in submit_filter_value_arg_entries(filters) {
-        if let Some(value) = value {
-            cli_args.push(flag.to_string());
-            cli_args.push(value.clone());
-        }
-    }
-
-    if args.dry_run {
-        cli_args.push("--dry-run".to_string());
-    }
-
-    cli_args
-}
-
-fn run_submit_quiet_via_cli(args: &SubmitCommandArgs) -> Result<()> {
-    let executable = std::env::current_exe()
-        .context("Failed to resolve tokscale executable path for autosubmit")?;
-    let output = Command::new(executable)
-        .env("TOKSCALE_MACHINE_READABLE_SUBMIT_ERRORS", "1")
-        .args(submit_args_to_cli_args(args))
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .context("Failed to launch tokscale submit for autosubmit")?;
-
-    if output.status.success() {
-        Ok(())
-    } else {
-        bail!("{}", extract_submit_failure_reason(&output));
-    }
-}
-
 fn run_autosubmit_run_with_submitter<F>(submitter: F) -> Result<()>
 where
     F: FnOnce(&SubmitCommandArgs) -> Result<()>,
@@ -1208,7 +1113,7 @@ pub fn run_autosubmit_status() -> Result<()> {
 }
 
 pub fn run_autosubmit_run() -> Result<()> {
-    run_autosubmit_run_with_submitter(run_submit_quiet_via_cli)
+    run_autosubmit_run_with_submitter(run_submit_with_args_autosubmit)
 }
 
 pub fn is_due(config: &AutosubmitConfig, now: DateTime<Utc>) -> bool {
@@ -1241,22 +1146,26 @@ pub fn format_submit_args(args: &SubmitCommandArgs) -> String {
     }
 }
 
-fn submit_filter_bool_flag_entries(filters: &SubmitFilterArgs) -> [(&'static str, bool); 18] {
+fn submit_filter_bool_flag_entries(filters: &SubmitFilterArgs) -> [(&'static str, bool); 22] {
     [
         ("--opencode", filters.opencode),
         ("--claude", filters.claude),
         ("--codex", filters.codex),
+        ("--copilot", filters.copilot),
         ("--gemini", filters.gemini),
         ("--cursor", filters.cursor),
         ("--amp", filters.amp),
         ("--droid", filters.droid),
         ("--openclaw", filters.openclaw),
+        ("--hermes", filters.hermes),
         ("--pi", filters.pi),
         ("--kimi", filters.kimi),
         ("--qwen", filters.qwen),
         ("--roocode", filters.roocode),
         ("--kilocode", filters.kilocode),
+        ("--kilo", filters.kilo),
         ("--mux", filters.mux),
+        ("--crush", filters.crush),
         ("--synthetic", filters.synthetic),
         ("--today", filters.today),
         ("--week", filters.week),
@@ -1892,15 +1801,10 @@ mod tests {
     use anyhow::anyhow;
     use serial_test::serial;
     use std::ffi::OsString;
-    use std::process::Output;
     use std::sync::{Arc, Mutex};
     use tempfile::TempDir;
 
     #[cfg(unix)]
-    use std::os::unix::process::ExitStatusExt;
-    #[cfg(windows)]
-    use std::os::windows::process::ExitStatusExt;
-
     struct TestEnvGuard {
         _temp: TempDir,
         previous_home: Option<OsString>,
@@ -1984,19 +1888,6 @@ mod tests {
         }
     }
 
-    fn failed_output(stdout: &str, stderr: &str) -> Output {
-        #[cfg(unix)]
-        let status = std::process::ExitStatus::from_raw(1 << 8);
-        #[cfg(windows)]
-        let status = std::process::ExitStatus::from_raw(1);
-
-        Output {
-            status,
-            stdout: stdout.as_bytes().to_vec(),
-            stderr: stderr.as_bytes().to_vec(),
-        }
-    }
-
     #[test]
     fn parse_interval_accepts_hour_and_day_suffixes() {
         let hours = parse_interval_spec("2h").unwrap();
@@ -2062,18 +1953,6 @@ mod tests {
     fn build_submit_template_keeps_dry_run_off() {
         let args = sample_submit_args();
         assert!(!args.dry_run);
-    }
-
-    #[test]
-    fn extract_submit_failure_reason_prefers_machine_readable_prefix() {
-        let output = failed_output(
-            "",
-            "__TOKSCALE_SUBMIT_ERROR__:machine-stable reason\nError: human-facing reason",
-        );
-
-        let reason = extract_submit_failure_reason(&output);
-
-        assert_eq!(reason, "machine-stable reason");
     }
 
     #[test]
@@ -2178,6 +2057,25 @@ mod tests {
         let text = format_submit_args(&args);
         assert!(text.contains("--codex"));
         assert!(text.contains("--month"));
+    }
+
+    #[test]
+    fn format_submit_args_includes_recent_client_flags() {
+        let args = SubmitCommandArgs {
+            filters: SubmitFilterArgs {
+                copilot: true,
+                hermes: true,
+                kilo: true,
+                crush: true,
+                ..SubmitFilterArgs::default()
+            },
+            ..SubmitCommandArgs::default()
+        };
+        let text = format_submit_args(&args);
+        assert!(text.contains("--copilot"));
+        assert!(text.contains("--hermes"));
+        assert!(text.contains("--kilo"));
+        assert!(text.contains("--crush"));
     }
 
     #[test]

@@ -1037,6 +1037,7 @@ mod tests {
     use super::super::ui::widgets::get_provider_shade;
     use super::*;
     use crate::tui::data::{ModelUsage, TokenBreakdown};
+    use serial_test::serial;
 
     #[test]
     fn test_tab_all() {
@@ -1657,6 +1658,7 @@ mod tests {
     // ── handle_key_event: theme ─────────────────────────────────────
 
     #[test]
+    #[serial]
     fn test_handle_key_theme_cycle() {
         let mut app = make_app();
         let initial_theme = app.theme.name;
@@ -1740,6 +1742,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_handle_key_auto_refresh_toggle() {
         let mut app = make_app();
         let initial = app.auto_refresh;
@@ -1748,6 +1751,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_handle_key_increase_decrease_refresh() {
         let mut app = make_app();
         let initial_interval = app.auto_refresh_interval;

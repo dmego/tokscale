@@ -15,8 +15,6 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use tui::Tab;
 
-pub const SUBMIT_MACHINE_ERROR_PREFIX: &str = "__TOKSCALE_SUBMIT_ERROR__:";
-
 #[derive(Parser)]
 #[command(name = "tokscale")]
 #[command(author, version, about = "AI token usage analytics")]
@@ -451,9 +449,7 @@ fn main() -> Result<()> {
                 None,
             )
         }
-        Some(Commands::Submit(args)) => run_submit_with_args(&args).inspect_err(|err| {
-            emit_submit_machine_error(&err.to_string());
-        }),
+        Some(Commands::Submit(args)) => run_submit_with_args(&args),
         Some(Commands::Autosubmit { command }) => {
             commands::autosubmit::handle_autosubmit_command(command)
         }
@@ -853,7 +849,73 @@ fn normalize_year_filter(
     }
 }
 
-pub fn run_submit_with_args(args: &SubmitCommandArgs) -> Result<()> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SubmitRunMode {
+    InteractiveCli,
+    Autosubmit,
+}
+
+impl SubmitRunMode {
+    fn should_prompt_for_star(self) -> bool {
+        matches!(self, Self::InteractiveCli)
+    }
+
+    fn should_print_user_output(self) -> bool {
+        matches!(self, Self::InteractiveCli)
+    }
+
+    fn should_warm_tui_cache(self) -> bool {
+        matches!(self, Self::InteractiveCli)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SubmitExecutionOutcome {
+    submitted: bool,
+}
+
+#[derive(Debug, Clone)]
+struct SubmitExecutionError {
+    message: String,
+    already_rendered: bool,
+}
+
+impl SubmitExecutionError {
+    fn plain(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            already_rendered: false,
+        }
+    }
+
+    fn rendered(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            already_rendered: true,
+        }
+    }
+
+    fn message(&self) -> &str {
+        &self.message
+    }
+
+    fn already_rendered(&self) -> bool {
+        self.already_rendered
+    }
+}
+
+impl std::fmt::Display for SubmitExecutionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for SubmitExecutionError {}
+
+fn run_submit_with_args_mode(
+    args: &SubmitCommandArgs,
+    mode: SubmitRunMode,
+) -> std::result::Result<SubmitExecutionOutcome, SubmitExecutionError> {
     let clients = build_client_filter(args.filters.client_flags());
     let (since, until) = build_date_filter(
         args.filters.today,
@@ -868,7 +930,34 @@ pub fn run_submit_with_args(args: &SubmitCommandArgs) -> Result<()> {
         args.filters.month,
         args.filters.year.clone(),
     );
-    run_submit_command(clients, since, until, year, args.dry_run)
+
+    execute_submit_command(clients, since, until, year, args.dry_run, mode)
+}
+
+pub fn run_submit_with_args(args: &SubmitCommandArgs) -> Result<()> {
+    match run_submit_with_args_mode(args, SubmitRunMode::InteractiveCli) {
+        Ok(outcome) => {
+            if outcome.submitted && SubmitRunMode::InteractiveCli.should_warm_tui_cache() {
+                spawn_warm_tui_cache_detached();
+            }
+            Ok(())
+        }
+        Err(err) => {
+            use colored::Colorize;
+
+            if !err.already_rendered() {
+                eprintln!("\n  {}", format!("Error: {}", err.message()).red());
+                println!();
+            }
+            std::process::exit(1);
+        }
+    }
+}
+
+pub(crate) fn run_submit_with_args_autosubmit(args: &SubmitCommandArgs) -> Result<()> {
+    run_submit_with_args_mode(args, SubmitRunMode::Autosubmit)
+        .map(|_| ())
+        .map_err(Into::into)
 }
 
 fn get_date_range_label(
@@ -3401,13 +3490,14 @@ fn cap_graph_result_to_utc_today(
     true
 }
 
-fn run_submit_command(
+fn execute_submit_command(
     clients: Option<Vec<String>>,
     since: Option<String>,
     until: Option<String>,
     year: Option<String>,
     dry_run: bool,
-) -> Result<()> {
+    mode: SubmitRunMode,
+) -> std::result::Result<SubmitExecutionOutcome, SubmitExecutionError> {
     use colored::Colorize;
     use std::io::IsTerminal;
     use tokio::runtime::Runtime;
@@ -3416,21 +3506,27 @@ fn run_submit_command(
     let credentials = match auth::load_credentials() {
         Some(creds) => creds,
         None => {
-            emit_submit_machine_error("Not logged in.");
-            eprintln!("\n  {}", "Not logged in.".yellow());
-            eprintln!(
-                "{}",
-                "  Run 'bunx tokscale@latest login' first.\n".bright_black()
-            );
-            std::process::exit(1);
+            if mode.should_print_user_output() {
+                eprintln!("\n  {}", "Not logged in.".yellow());
+                eprintln!(
+                    "{}",
+                    "  Run 'bunx tokscale@latest login' first.\n".bright_black()
+                );
+            }
+            return Err(SubmitExecutionError::rendered("Not logged in."));
         }
     };
 
-    if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+    if mode.should_prompt_for_star()
+        && std::io::stdin().is_terminal()
+        && std::io::stdout().is_terminal()
+    {
         let _ = prompt_star_repo(&credentials.username);
     }
 
-    println!("\n  {}\n", "Tokscale - Submit Usage Data".cyan());
+    if mode.should_print_user_output() {
+        println!("\n  {}\n", "Tokscale - Submit Usage Data".cyan());
+    }
 
     let clients = clients.or_else(|| Some(default_submit_clients()));
 
@@ -3439,16 +3535,20 @@ fn run_submit_command(
         .is_none_or(|s| s.iter().any(|src| src == "cursor"));
     let has_cursor_cache = cursor::has_cursor_usage_cache();
     if include_cursor && cursor::is_cursor_logged_in() {
-        println!("{}", "  Syncing Cursor usage data...".bright_black());
-        let rt_sync = Runtime::new()?;
+        if mode.should_print_user_output() {
+            println!("{}", "  Syncing Cursor usage data...".bright_black());
+        }
+        let rt_sync = Runtime::new().map_err(|err| SubmitExecutionError::plain(err.to_string()))?;
         let sync_result = rt_sync.block_on(async { cursor::sync_cursor_cache().await });
         if sync_result.synced {
-            println!(
-                "{}",
-                format!("  Cursor: {} usage events synced", sync_result.rows).bright_black()
-            );
+            if mode.should_print_user_output() {
+                println!(
+                    "{}",
+                    format!("  Cursor: {} usage events synced", sync_result.rows).bright_black()
+                );
+            }
         } else if let Some(err) = sync_result.error {
-            if has_cursor_cache {
+            if has_cursor_cache && mode.should_print_user_output() {
                 println!(
                     "{}",
                     format!("  Cursor sync failed; using cached data: {}", err).yellow()
@@ -3457,9 +3557,11 @@ fn run_submit_command(
         }
     }
 
-    println!("{}", "  Scanning local session data...".bright_black());
+    if mode.should_print_user_output() {
+        println!("{}", "  Scanning local session data...".bright_black());
+    }
 
-    let rt = Runtime::new()?;
+    let rt = Runtime::new().map_err(|err| SubmitExecutionError::plain(err.to_string()))?;
     let graph_result = rt
         .block_on(async {
             generate_graph(ReportOptions {
@@ -3474,7 +3576,7 @@ fn run_submit_command(
             })
             .await
         })
-        .map_err(|e| anyhow::anyhow!(e))?;
+        .map_err(SubmitExecutionError::plain)?;
 
     // Cap contributions to UTC today to prevent timezone-related future-date
     // rejections. The CLI generates dates using chrono::Local, but the server
@@ -3487,56 +3589,64 @@ fn run_submit_command(
     let mut graph_result = graph_result;
     cap_graph_result_to_utc_today(&mut graph_result, &utc_today);
 
-    println!("{}", "  Data to submit:".white());
-    println!(
-        "{}",
-        format!(
-            "    Date range: {} to {}",
-            graph_result.meta.date_range_start, graph_result.meta.date_range_end,
-        )
-        .bright_black()
-    );
-    println!(
-        "{}",
-        format!("    Active days: {}", graph_result.summary.active_days).bright_black()
-    );
-    println!(
-        "{}",
-        format!(
-            "    Total tokens: {}",
-            format_tokens_with_commas(graph_result.summary.total_tokens)
-        )
-        .bright_black()
-    );
-    println!(
-        "{}",
-        format!(
-            "    Total cost: {}",
-            format_currency(graph_result.summary.total_cost)
-        )
-        .bright_black()
-    );
-    println!(
-        "{}",
-        format!("    Clients: {}", graph_result.summary.clients.join(", ")).bright_black()
-    );
-    println!(
-        "{}",
-        format!("    Models: {} models", graph_result.summary.models.len()).bright_black()
-    );
-    println!();
+    if mode.should_print_user_output() {
+        println!("{}", "  Data to submit:".white());
+        println!(
+            "{}",
+            format!(
+                "    Date range: {} to {}",
+                graph_result.meta.date_range_start, graph_result.meta.date_range_end,
+            )
+            .bright_black()
+        );
+        println!(
+            "{}",
+            format!("    Active days: {}", graph_result.summary.active_days).bright_black()
+        );
+        println!(
+            "{}",
+            format!(
+                "    Total tokens: {}",
+                format_tokens_with_commas(graph_result.summary.total_tokens)
+            )
+            .bright_black()
+        );
+        println!(
+            "{}",
+            format!(
+                "    Total cost: {}",
+                format_currency(graph_result.summary.total_cost)
+            )
+            .bright_black()
+        );
+        println!(
+            "{}",
+            format!("    Clients: {}", graph_result.summary.clients.join(", ")).bright_black()
+        );
+        println!(
+            "{}",
+            format!("    Models: {} models", graph_result.summary.models.len()).bright_black()
+        );
+        println!();
+    }
 
     if graph_result.summary.total_tokens == 0 {
-        println!("{}", "  No usage data found to submit.\n".yellow());
-        return Ok(());
+        if mode.should_print_user_output() {
+            println!("{}", "  No usage data found to submit.\n".yellow());
+        }
+        return Ok(SubmitExecutionOutcome { submitted: false });
     }
 
     if dry_run {
-        println!("{}", "  Dry run - not submitting data.\n".yellow());
-        return Ok(());
+        if mode.should_print_user_output() {
+            println!("{}", "  Dry run - not submitting data.\n".yellow());
+        }
+        return Ok(SubmitExecutionOutcome { submitted: false });
     }
 
-    println!("{}", "  Submitting to server...".bright_black());
+    if mode.should_print_user_output() {
+        println!("{}", "  Submitting to server...".bright_black());
+    }
 
     let api_url = auth::get_api_base_url();
 
@@ -3574,79 +3684,80 @@ fn run_submit_command(
                     .error
                     .clone()
                     .unwrap_or_else(|| "Submission failed".to_string());
-                emit_submit_machine_error(&error_message);
-                eprintln!("\n  {}", format!("Error: {}", error_message).red());
-                if let Some(details) = body.details {
-                    for detail in details {
-                        eprintln!("{}", format!("    - {}", detail).bright_black());
-                    }
-                }
-                println!();
-                std::process::exit(1);
-            }
-
-            println!("\n  {}", "Successfully submitted!".green());
-            println!();
-            println!("{}", "  Summary:".white());
-            if let Some(id) = body.submission_id {
-                println!("{}", format!("    Submission ID: {}", id).bright_black());
-            }
-            if let Some(metrics) = &body.metrics {
-                if let Some(tokens) = metrics.total_tokens {
-                    println!(
-                        "{}",
-                        format!("    Total tokens: {}", format_tokens_with_commas(tokens))
-                            .bright_black()
-                    );
-                }
-                if let Some(cost) = metrics.total_cost {
-                    println!(
-                        "{}",
-                        format!("    Total cost: {}", format_currency(cost)).bright_black()
-                    );
-                }
-                if let Some(days) = metrics.active_days {
-                    println!("{}", format!("    Active days: {}", days).bright_black());
-                }
-            }
-            println!();
-            println!(
-                "{}",
-                osc8_link_with_text(
-                    &format!("{}/u/{}", api_url, credentials.username),
-                    &format!(
-                        "  View your profile: {}/u/{}",
-                        api_url, credentials.username
-                    ),
-                )
-                .cyan()
-            );
-            println!();
-
-            if let Some(warnings) = body.warnings {
-                if !warnings.is_empty() {
-                    println!("{}", "  Warnings:".yellow());
-                    for warning in warnings {
-                        println!("{}", format!("    - {}", warning).bright_black());
+                if mode.should_print_user_output() {
+                    eprintln!("\n  {}", format!("Error: {}", error_message).red());
+                    if let Some(details) = body.details {
+                        for detail in details {
+                            eprintln!("{}", format!("    - {}", detail).bright_black());
+                        }
                     }
                     println!();
                 }
+                return Err(SubmitExecutionError::rendered(error_message));
             }
+
+            if mode.should_print_user_output() {
+                println!("\n  {}", "Successfully submitted!".green());
+                println!();
+                println!("{}", "  Summary:".white());
+                if let Some(id) = body.submission_id {
+                    println!("{}", format!("    Submission ID: {}", id).bright_black());
+                }
+                if let Some(metrics) = &body.metrics {
+                    if let Some(tokens) = metrics.total_tokens {
+                        println!(
+                            "{}",
+                            format!("    Total tokens: {}", format_tokens_with_commas(tokens))
+                                .bright_black()
+                        );
+                    }
+                    if let Some(cost) = metrics.total_cost {
+                        println!(
+                            "{}",
+                            format!("    Total cost: {}", format_currency(cost)).bright_black()
+                        );
+                    }
+                    if let Some(days) = metrics.active_days {
+                        println!("{}", format!("    Active days: {}", days).bright_black());
+                    }
+                }
+                println!();
+                println!(
+                    "{}",
+                    osc8_link_with_text(
+                        &format!("{}/u/{}", api_url, credentials.username),
+                        &format!(
+                            "  View your profile: {}/u/{}",
+                            api_url, credentials.username
+                        ),
+                    )
+                    .cyan()
+                );
+                println!();
+
+                if let Some(warnings) = body.warnings {
+                    if !warnings.is_empty() {
+                        println!("{}", "  Warnings:".yellow());
+                        for warning in warnings {
+                            println!("{}", format!("    - {}", warning).bright_black());
+                        }
+                        println!();
+                    }
+                }
+            }
+
+            Ok(SubmitExecutionOutcome { submitted: true })
         }
         Err(err) => {
-            emit_submit_machine_error("Failed to connect to server.");
-            eprintln!("\n  {}", "Error: Failed to connect to server.".red());
-            eprintln!("{}\n", format!("  {}", err).bright_black());
-            std::process::exit(1);
+            if mode.should_print_user_output() {
+                eprintln!("\n  {}", "Error: Failed to connect to server.".red());
+                eprintln!("{}\n", format!("  {}", err).bright_black());
+            }
+            Err(SubmitExecutionError::rendered(
+                "Failed to connect to server.",
+            ))
         }
     }
-
-    // Warm the TUI cache so the next `tokscale` launch is instant.
-    // Detached subprocess so submit returns to the shell immediately on large
-    // datasets — a full re-scan would otherwise block for tens of seconds.
-    spawn_warm_tui_cache_detached();
-
-    Ok(())
 }
 
 fn spawn_warm_tui_cache_detached() {
@@ -3686,18 +3797,6 @@ fn run_warm_tui_cache() -> Result<()> {
         save_cached_data(&data, &enabled_set, false, &GroupBy::default());
     }
     Ok(())
-}
-
-fn submit_machine_error_contract_enabled() -> bool {
-    std::env::var("TOKSCALE_MACHINE_READABLE_SUBMIT_ERRORS")
-        .map(|value| matches!(value.as_str(), "1" | "true" | "yes"))
-        .unwrap_or(false)
-}
-
-fn emit_submit_machine_error(reason: &str) {
-    if submit_machine_error_contract_enabled() {
-        eprintln!("{SUBMIT_MACHINE_ERROR_PREFIX}{reason}");
-    }
 }
 
 fn run_cursor_command(subcommand: CursorSubcommand) -> Result<()> {
@@ -4285,6 +4384,22 @@ mod tests {
 
         assert!(parsed.filters.opencode);
         assert!(!parsed.dry_run);
+    }
+
+    #[test]
+    fn test_submit_run_mode_interactive_flags() {
+        let mode = SubmitRunMode::InteractiveCli;
+        assert!(mode.should_prompt_for_star());
+        assert!(mode.should_print_user_output());
+        assert!(mode.should_warm_tui_cache());
+    }
+
+    #[test]
+    fn test_submit_run_mode_autosubmit_flags() {
+        let mode = SubmitRunMode::Autosubmit;
+        assert!(!mode.should_prompt_for_star());
+        assert!(!mode.should_print_user_output());
+        assert!(!mode.should_warm_tui_cache());
     }
 
     #[test]
